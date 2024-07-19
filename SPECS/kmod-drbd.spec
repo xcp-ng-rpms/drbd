@@ -1,7 +1,7 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
 Version: 9.2.10
-Release: 1.0%{?dist}
+Release: 1.4%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
@@ -20,6 +20,9 @@ BuildRequires: perl
 %if %{defined kernel_module_package_buildreqs}
 BuildRequires: %kernel_module_package_buildreqs
 %endif
+
+# XCP-ng patches
+Patch1001: 0001-Revert-drbd-rework-autopromote.patch
 
 # rpmbuild --with gcov to set GCOV_PROFILE=y for make
 %bcond_with gcov
@@ -64,6 +67,7 @@ for the DRBD core and various transports.
 %prep
 rm -f %{?my_tmp_files_to_be_removed_in_prep}
 %setup -q -n drbd-%{tarball_version}
+%patch1001 -p1
 
 %build
 make -C drbd %{_smp_mflags} all KDIR=/lib/modules/%{kernel_version}/build \
@@ -140,6 +144,9 @@ fi
 rm -rf %{buildroot}
 
 %changelog
+* Fri Jul 19 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.4
+- Add 0001-Revert-drbd-rework-autopromote.patch
+
 * Mon Jul 15 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.0
 - Fix specfile for XCP-ng build env
 
