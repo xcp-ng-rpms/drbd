@@ -1,0 +1,151 @@
+From 95948c7b855c8b9226b58747b8be20021ff58a12 Mon Sep 17 00:00:00 2001
+From: Lars Ellenberg <lars.ellenberg@linbit.com>
+Date: Thu, 10 Oct 2024 19:01:26 +0200
+Subject: [PATCH 2/4] Fix for 'Revert "drbd: rework autopromote"'
+
+That revert was incomplete/incorrect, and introduced possible deadlocks:
+
+  # echo >/dev/drbdX </dev/drbdX &
+would deadlock in drbd_release() -> drbd_fsync_device() -> drbd_reject_write_early(),
+and prevent any future access to the device until reboot.
+
+  # drbdsetup primary X
+  # mount -o ro /dev/drbdX /mnt
+  # mount -o remount,rw /mnt
+  # umount /mnt
+  # drbdsetup down X
+would leave the device "un-down-able" and locked in primary role.
+If you repeat that long enough, you may even provoke a kernel crash.
+
+  # drbdsetup resource-options --auto-promote=no X
+  # drbdsetup secondary X
+  # : > /dev/drbdX
+would leave the device "un-down-able".
+Again, with a little creativity you likely could provoke a kernel crash.
+
+Introduce device->ro_cnt_is_write to handle the "remount" case.
+
+Call drbd_fsync_device() before we decrease the open_*_cnt
+to fix the potential deadlock.
+
+Fix the compat layer to use the passed in "mode" instead of hardcoded 0
+for drbd_release() in the error path of drbd_open().
+---
+ drbd/drbd_int.h   |  1 +
+ drbd/drbd_main.c  | 31 ++++++++++++++++++++++++++++++-
+ drbd/drbd_req.c   |  5 ++---
+ drbd/drbd_state.c |  5 +++--
+ 4 files changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/drbd/drbd_int.h b/drbd/drbd_int.h
+index c9b6e462e..25cb3359a 100644
+--- a/drbd/drbd_int.h
++++ b/drbd/drbd_int.h
+@@ -1543,6 +1543,7 @@ struct drbd_device {
+ 
+ 	struct drbd_bitmap *bitmap;
+ 
++	bool ro_cnt_is_write; /* we want to deal with mount --remount,rw somehow */
+ 	int open_rw_cnt, open_ro_cnt;
+ 
+ 	/* FIXME clean comments, restructure so it is more obvious which
+diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
+index e11532574..9da469e8e 100644
+--- a/drbd/drbd_main.c
++++ b/drbd/drbd_main.c
+@@ -2859,7 +2859,10 @@ void drbd_open_counts(struct drbd_resource *resource, int *rw_count_ptr, int *ro
+ 	rcu_read_lock();
+ 	idr_for_each_entry(&resource->devices, device, vnr) {
+ 		rw_count += device->open_rw_cnt;
+-		ro_count += device->open_ro_cnt;
++		if (device->ro_cnt_is_write)
++			rw_count += device->open_ro_cnt;
++		else
++			ro_count += device->open_ro_cnt;
+ 	}
+ 	rcu_read_unlock();
+ 	*rw_count_ptr = rw_count;
+@@ -2929,11 +2932,37 @@ static void drbd_release(struct gendisk *gd, fmode_t mode)
+ 	struct drbd_resource *resource = device->resource;
+ 	int open_rw_cnt, open_ro_cnt;
+ 
++	/* Last writer to close will be responsible for write-out of all dirty pages.
++	 * If someone did a --remount,rw or similar, then we can no longer rely
++	 * on "ro_cnt" actually meaning read-only.
++	 * Do it before decreasing the open count to not confuse code paths
++	 * that check for open_*_cnt != 0 during write requests.
++	 * If we have a read-only opener that managed to "silently convert"
++	 * to write (mount -o remount,rw), and we have dirty pages, but not
++	 * seen any write yet with open_rw_cnt == 0, ro_cnt_is_write is still
++	 * false, and holding the mutex during fsync will run right into the
++	 * "mutex_lock" case in drbd_reject_write_early(), causing a deadlock.
++	 */
+ 	mutex_lock(&resource->open_release);
++	if (device->open_rw_cnt + device->open_ro_cnt == 1
++	|| (mode & FMODE_WRITE && device->open_rw_cnt == 1)) {
++		mutex_unlock(&resource->open_release);
++		/* If someone re-opened meanwhile, that's not a problem.
++		 * We can sync more than once.
++		 * But we must not miss the last one.
++		 */
++		drbd_fsync_device(device);
++		mutex_lock(&resource->open_release);
++	}
++
+ 	if (mode & FMODE_WRITE)
+ 		device->open_rw_cnt--;
+ 	else
+ 		device->open_ro_cnt--;
++
++	if (device->ro_cnt_is_write && device->open_ro_cnt == 0)
++		device->ro_cnt_is_write = false;
++
+ 	drbd_open_counts(resource, &open_rw_cnt, &open_ro_cnt);
+ 
+ 	/* last one to close will be responsible for write-out of all dirty pages */
+diff --git a/drbd/drbd_req.c b/drbd/drbd_req.c
+index d7ccfe413..bd49a2b39 100644
+--- a/drbd/drbd_req.c
++++ b/drbd/drbd_req.c
+@@ -2545,7 +2545,7 @@ static bool drbd_reject_write_early(struct drbd_device *device, struct bio *bio)
+ 		return true;
+ 	} else if (device->open_rw_cnt + device->open_ro_cnt == 0) {
+ 		drbd_err_ratelimit(device, "WRITE request, but open_cnt == 0!\n");
+-	} else if (device->open_rw_cnt == 0 && bio_has_data(bio)) {
++	} else if (device->open_rw_cnt == 0 && !device->ro_cnt_is_write && bio_has_data(bio)) {
+ 		/*
+ 		 * If the resource was (temporarily, auto) promoted,
+ 		 * a remount,rw may have succeeded without marking the device
+@@ -2557,8 +2557,7 @@ static bool drbd_reject_write_early(struct drbd_device *device, struct bio *bio)
+ 		mutex_lock(&resource->open_release);
+ 		drbd_info(device, "open_ro_cnt:%d, implicitly promoted to writable\n",
+ 			device->open_ro_cnt);
+-		device->open_rw_cnt++;
+-		device->open_ro_cnt--;
++		device->ro_cnt_is_write = true;
+ 		mutex_unlock(&resource->open_release);
+ 	}
+ 	return false;
+diff --git a/drbd/drbd_state.c b/drbd/drbd_state.c
+index 2a63d4add..30b8c3bec 100644
+--- a/drbd/drbd_state.c
++++ b/drbd/drbd_state.c
+@@ -1643,7 +1643,7 @@ handshake_found:
+ 				return SS_TWO_PRIMARIES;
+ 			if (!fail_io[NEW]) {
+ 				idr_for_each_entry(&resource->devices, device, vnr) {
+-					if (device->open_ro_cnt)
++					if (!device->ro_cnt_is_write && device->open_ro_cnt)
+ 						return SS_PRIMARY_READER;
+ 					/*
+ 					 * One might be tempted to add "|| open_rw_cont" here.
+@@ -1670,7 +1670,8 @@ handshake_found:
+ 		     (disk_state[OLD] > D_DETACHING && disk_state[NEW] == D_DETACHING)))
+ 			return SS_IN_TRANSIENT_STATE;
+ 
+-		if (role[OLD] == R_PRIMARY && role[NEW] == R_SECONDARY && device->open_rw_cnt &&
++		if (role[OLD] == R_PRIMARY && role[NEW] == R_SECONDARY &&
++		    (device->open_rw_cnt || (device->ro_cnt_is_write && device->open_ro_cnt)) &&
+ 		    !(resource->state_change_flags & CS_FS_IGN_OPENERS))
+ 			return SS_DEVICE_IN_USE;
+ 

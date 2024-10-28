@@ -1,7 +1,7 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
 Version: 9.2.10
-Release: 1.4%{?dist}
+Release: 1.5%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
@@ -23,6 +23,9 @@ BuildRequires: %kernel_module_package_buildreqs
 
 # XCP-ng patches
 Patch1001: 0001-Revert-drbd-rework-autopromote.patch
+Patch1002: 0002-Fix-for-Revert-drbd-rework-autopromote.patch
+Patch1003: 0003-Revert-Fix-for-Revert-drbd-rework-autopromote.patch
+Patch1004: 0004-Fsync-data-when-writer-is-closed.patch
 
 # rpmbuild --with gcov to set GCOV_PROFILE=y for make
 %bcond_with gcov
@@ -144,6 +147,9 @@ fi
 rm -rf %{buildroot}
 
 %changelog
+* Mon Oct 28 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.5
+- Add 0002-Fix-for-Revert-drbd-rework-autopromote.patch
+
 * Fri Jul 19 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.4
 - Add 0001-Revert-drbd-rework-autopromote.patch
 

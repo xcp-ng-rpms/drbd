@@ -1,7 +1,7 @@
-From e136ea893448550d43922316381a3f7ea196a302 Mon Sep 17 00:00:00 2001
+From a6056b0d7f9c0a7dce954073ed1cacb7aac12f09 Mon Sep 17 00:00:00 2001
 From: Ronan Abhamon <ronan.abhamon@vates.tech>
 Date: Mon, 15 Jul 2024 17:31:36 +0200
-Subject: [PATCH] Revert "drbd: rework autopromote"
+Subject: [PATCH 1/4] Revert "drbd: rework autopromote"
 
 This reverts commit e3ef0e2.
 and adapts the compat code as neccessary.
@@ -288,6 +288,3 @@ index 973395559..2a63d4add 100644
  			return SS_NO_UP_TO_DATE_DISK;
  
  		if (disk_state[NEW] == D_NEGOTIATING)
--- 
-2.45.2
-

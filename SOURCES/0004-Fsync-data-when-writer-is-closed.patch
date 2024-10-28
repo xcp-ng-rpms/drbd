@@ -1,0 +1,31 @@
+From 28cdf0bf23d306ff786085bf2b01f0f6b132d9cb Mon Sep 17 00:00:00 2001
+From: Ronan Abhamon <ronan.abhamon@vates.tech>
+Date: Mon, 4 Nov 2024 15:18:28 +0100
+Subject: [PATCH 4/4] Fsync data when writer is closed
+
+---
+ drbd/drbd_main.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
+index e11532574..29218f362 100644
+--- a/drbd/drbd_main.c
++++ b/drbd/drbd_main.c
+@@ -2930,6 +2930,17 @@ static void drbd_release(struct gendisk *gd, fmode_t mode)
+ 	int open_rw_cnt, open_ro_cnt;
+ 
+ 	mutex_lock(&resource->open_release);
++	if (device->open_rw_cnt + device->open_ro_cnt == 1
++	|| (mode & FMODE_WRITE && device->open_rw_cnt == 1)) {
++		mutex_unlock(&resource->open_release);
++		/* If someone re-opened meanwhile, that's not a problem.
++		 * We can sync more than once.
++		 * But we must not miss the last one.
++		 */
++		drbd_fsync_device(device);
++		mutex_lock(&resource->open_release);
++	}
++
+ 	if (mode & FMODE_WRITE)
+ 		device->open_rw_cnt--;
+ 	else
