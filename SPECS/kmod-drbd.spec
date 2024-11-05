@@ -1,7 +1,7 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
 Version: 9.2.10
-Release: 1.4%{?dist}
+Release: 1.5%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
@@ -129,6 +129,11 @@ if [ -x "/sbin/weak-modules" ]; then
     printf '%s\n' "${modules[@]}"     | /sbin/weak-modules --remove-modules
 fi
 
+# Modify LVM configuration to never scan DRBD devices.
+%triggerin -- lvm2
+sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" %{_sysconfdir}/lvm/lvm.conf
+sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" %{_sysconfdir}/lvm/master/lvm.conf
+
 %files
 %defattr(-,root,root)
 %doc COPYING
@@ -144,6 +149,9 @@ fi
 rm -rf %{buildroot}
 
 %changelog
+* Tue Nov 05 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.5
+- Modify LVM configuration to never scan DRBD devices
+
 * Fri Jul 19 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.4
 - Add 0001-Revert-drbd-rework-autopromote.patch
 
