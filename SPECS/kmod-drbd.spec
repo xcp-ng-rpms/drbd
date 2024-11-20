@@ -1,7 +1,7 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
-Version: 9.2.10
-Release: 1.5%{?dist}
+Version: 9.2.11
+Release: 1.1%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
@@ -20,9 +20,6 @@ BuildRequires: perl
 %if %{defined kernel_module_package_buildreqs}
 BuildRequires: %kernel_module_package_buildreqs
 %endif
-
-# XCP-ng patches
-Patch1001: 0001-Revert-drbd-rework-autopromote.patch
 
 # rpmbuild --with gcov to set GCOV_PROFILE=y for make
 %bcond_with gcov
@@ -67,10 +64,9 @@ for the DRBD core and various transports.
 %prep
 rm -f %{?my_tmp_files_to_be_removed_in_prep}
 %setup -q -n drbd-%{tarball_version}
-%patch1001 -p1
 
 %build
-make -C drbd %{_smp_mflags} all KDIR=/lib/modules/%{kernel_version}/build \
+make %{_smp_mflags} all KDIR=/lib/modules/%{kernel_version}/build \
 	%{?_ofed_version:BUILD_OFED=1} \
 	%{?ofed_kernel_dir:OFED_KERNEL_DIR=%{ofed_kernel_dir}} \
 	%{?_ofed_version:OFED_VERSION=%{_ofed_version}} \
@@ -149,6 +145,12 @@ sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" 
 rm -rf %{buildroot}
 
 %changelog
+* Tue Jan 14 2025 Damien Thenot <damien.thenot@vates.tech> - 9.2.11-1.1
+- Rebuild from branch restore_exact_open_counts-v2, repo: https://github.com/LINBIT/drbd, commit: 7ed670f3e64bc1878c07709c1e99bc60d52e5f66
+
+* Wed Nov 20 2024 Damien Thenot <damien.thenot@vates.tech> - 9.2.11-1.0
+- Build from branch restore_exact_open_counts-v2
+
 * Tue Nov 05 2024 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.10-1.5
 - Modify LVM configuration to never scan DRBD devices
 
