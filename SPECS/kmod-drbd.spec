@@ -1,13 +1,13 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
-Version: 9.2.11
-Release: 1.1%{?dist}
+Version: 9.2.14
+Release: 1.0%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
 
 %global tarball_version %(echo "%{version}" | sed -e "s,%{?dist}$,," -e "s,~,-,")
-Source: http://oss.linbit.com/drbd/drbd-%{tarball_version}.tar.gz
+Source: http://pkg.linbit.com/downloads/drbd/9/drbd-%{tarball_version}.tar.gz
 
 License: GPLv2+
 Group: System Environment/Kernel
@@ -20,6 +20,28 @@ BuildRequires: perl
 %if %{defined kernel_module_package_buildreqs}
 BuildRequires: %kernel_module_package_buildreqs
 %endif
+
+# XCP-ng patches
+#
+# Context
+# We use a modified version of DRBD due to changes added by linbit
+# that impact the mechanism for opening and closing DRBD resources.
+# On our side, the cost of changing our use of DRBD is significant
+# regarding the code base (risk of breaking a pool, blocking production, etc.),
+# however, it would be interesting to review our resource management
+# on SMAPIv3 in order to be compatible with the current linbit design.
+#
+# Patches generated from this repo/branch:
+# https://github.com/LINBIT/drbd/tree/restore_exact_open_counts_9.2.14
+# with this command: "git format-patch drbd-9.2.14 --no-signature --no-numbered".
+#
+# The official tarballs to use can be found at this link: https://pkg.linbit.com/
+# Never use GitHub tarballs (https://github.com/LINBIT/drbd/tags), which don't work.
+# They are created automatically every time a tag is pushed to the repo by linbit.
+# Just for understanding purposes: working tarballs can be generated via "make tarball"
+# in the root folder of the DRBD project.
+Patch1001: 0001-Revert-drbd-rework-autopromote.patch
+Patch1002: 0002-Fix-for-Revert-drbd-rework-autopromote.patch
 
 # rpmbuild --with gcov to set GCOV_PROFILE=y for make
 %bcond_with gcov
@@ -64,9 +86,11 @@ for the DRBD core and various transports.
 %prep
 rm -f %{?my_tmp_files_to_be_removed_in_prep}
 %setup -q -n drbd-%{tarball_version}
+%patch1001 -p1
+%patch1002 -p1
 
 %build
-make %{_smp_mflags} all KDIR=/lib/modules/%{kernel_version}/build \
+make -C drbd %{_smp_mflags} all KDIR=/lib/modules/%{kernel_version}/build \
 	%{?_ofed_version:BUILD_OFED=1} \
 	%{?ofed_kernel_dir:OFED_KERNEL_DIR=%{ofed_kernel_dir}} \
 	%{?_ofed_version:OFED_VERSION=%{_ofed_version}} \
@@ -97,8 +121,10 @@ make -C drbd install KDIR=/lib/modules/%{kernel_version}/build \
 mkdir -p %{buildroot}/etc/depmod.d
 find %{buildroot}/lib/modules/*/ -name "*.ko"  -printf "%%P\n" |
 sort | sed -ne 's,^extra/\(.*\)/\([^/]*\)\.ko$,\2 \1,p' |
-xargs -r printf "override %%-16s * weak-updates/%%s\n" \
-> %{buildroot}/etc/depmod.d/drbd.conf
+while read -r mod path; do
+	printf "override %%-16s * weak-updates/%%s\n" $mod $path
+	printf "override %%-16s %%s extra/%%s\n" $mod $kernelrelease $path
+done > %{buildroot}/etc/depmod.d/drbd.conf
 install -D misc/SECURE-BOOT-KEY-linbit.com.der %{buildroot}/etc/pki/linbit/SECURE-BOOT-KEY-linbit.com.der
 
 %post
@@ -145,6 +171,10 @@ sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" 
 rm -rf %{buildroot}
 
 %changelog
+* Wed Jun 18 2025 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.14-1.0
+- Add 0001-Revert-drbd-rework-autopromote.patch
+- Add 0002-Fix-for-Revert-drbd-rework-autopromote.patch
+
 * Tue Jan 14 2025 Damien Thenot <damien.thenot@vates.tech> - 9.2.11-1.1
 - Rebuild from branch restore_exact_open_counts-v2, repo: https://github.com/LINBIT/drbd, commit: 7ed670f3e64bc1878c07709c1e99bc60d52e5f66
 
