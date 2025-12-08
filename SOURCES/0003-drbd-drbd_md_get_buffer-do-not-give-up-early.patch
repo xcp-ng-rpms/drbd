@@ -1,0 +1,71 @@
+From 8d5ad2c298484c38674c0f9ace028dd12d8972a2 Mon Sep 17 00:00:00 2001
+From: Lars Ellenberg <lars.ellenberg@linbit.com>
+Date: Mon, 29 Sep 2025 22:12:08 +0200
+Subject: [PATCH] drbd: drbd_md_get_buffer: do not give up early
+
+We used to have an unbounded wait_event.
+
+Then we tried to introduce a warning:
+3242f5a08 drbd: Warn in case drbd_md_get_buffer() takes longer than 10 seconds
+but effectively gave up instead of just warn,
+"continue" jumpes not "to the start of the loop", but before while (0)..
+
+Instead of correcting that "in the spirit", this was made explicit:
+d27e2d19e drbd: drop useless use of do {} while (0)
+
+Other commits in that area just mangled the message a bit.
+
+The right thing to do is to wait until we get the buffer,
+or the backend disk is detached, not just give up after an
+arbitrary timeout.
+---
+ drbd/drbd_actlog.c | 30 +++++++++++++++++++-----------
+ 1 file changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/drbd/drbd_actlog.c b/drbd/drbd_actlog.c
+index 1e20f62c7..6f26c1013 100644
+--- a/drbd/drbd_actlog.c
++++ b/drbd/drbd_actlog.c
+@@ -23,23 +23,31 @@ void *drbd_md_get_buffer(struct drbd_device *device, const char *intent)
+ {
+ 	int r;
+ 	long t;
++	unsigned long t0 = jiffies;
++	unsigned int warn_s = 10;
+ 
+-	t = wait_event_timeout(device->misc_wait,
+-			(r = atomic_cmpxchg(&device->md_io.in_use, 0, 1)) == 0 ||
+-			device->disk_state[NOW] <= D_FAILED,
+-			HZ * 10);
++	for (;;) {
++		t = wait_event_timeout(device->misc_wait,
++				(r = atomic_cmpxchg(&device->md_io.in_use, 0, 1)) == 0 ||
++				device->disk_state[NOW] <= D_FAILED,
++				HZ * warn_s);
+ 
+-	if (r) {
+-		if (t == 0) {
+-			drbd_err(device, "Waited 10 Seconds for md_buffer! BUG?\n");
+-			drbd_err(device, "Failed to get md_buffer for %s, currently in use by %s\n",
+-				 intent, device->md_io.current_use);
+-		} else {
++		if (r == 0)
++			break;
++
++		if (t != 0) {
+ 			drbd_err(device, "Failed to get md_buffer for %s: disk state %s\n",
+ 				 intent, drbd_disk_str(device->disk_state[NOW]));
++			return NULL;
+ 		}
+ 
+-		return NULL;
++		/* r != 0, t == 0: still in use, hit the timeout above.
++		 * Warn, but keep trying.
++		 */
++		drbd_err(device, "Waited %lds on md_buffer for %s; in use by %s; still trying...\n",
++			 (jiffies - t0 + HZ-1)/HZ, intent, device->md_io.current_use);
++		/* reduce warn frequency */
++		warn_s = max(30, warn_s + 10);
+ 	}
+ 
+ 	device->md_io.current_use = intent;
