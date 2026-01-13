@@ -1,4 +1,4 @@
-From 7a825e223eab47a5f1dec763f1b37b7dff14a491 Mon Sep 17 00:00:00 2001
+From a979b8617a85ff8645996eb2f214672fe70c9229 Mon Sep 17 00:00:00 2001
 From: Lars Ellenberg <lars.ellenberg@linbit.com>
 Date: Thu, 10 Oct 2024 19:01:26 +0200
 Subject: [PATCH] Fix for 'Revert "drbd: rework autopromote"'
@@ -62,10 +62,10 @@ index 4c57be0b8..d24cf9a63 100644
 +...
 +}
 diff --git a/drbd/drbd_int.h b/drbd/drbd_int.h
-index 752819765..6866a246f 100644
+index ebe1b38e5..20eb42a98 100644
 --- a/drbd/drbd_int.h
 +++ b/drbd/drbd_int.h
-@@ -1576,6 +1576,7 @@ struct drbd_device {
+@@ -1581,6 +1581,7 @@ struct drbd_device {
  
  	struct drbd_bitmap *bitmap;
  
@@ -74,10 +74,10 @@ index 752819765..6866a246f 100644
  	/* FIXME clean comments, restructure so it is more obvious which
  	 * members are protected by what */
 diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
-index 678cfd756..39766e8df 100644
+index 2a1e23c15..b03e69795 100644
 --- a/drbd/drbd_main.c
 +++ b/drbd/drbd_main.c
-@@ -2917,7 +2917,10 @@ void drbd_open_counts(struct drbd_resource *resource, int *rw_count_ptr, int *ro
+@@ -2928,7 +2928,10 @@ void drbd_open_counts(struct drbd_resource *resource, int *rw_count_ptr, int *ro
  	rcu_read_lock();
  	idr_for_each_entry(&resource->devices, device, vnr) {
  		rw_count += device->open_rw_cnt;
@@ -89,7 +89,7 @@ index 678cfd756..39766e8df 100644
  	}
  	rcu_read_unlock();
  	*rw_count_ptr = rw_count;
-@@ -2990,26 +2993,37 @@ static void drbd_release(struct gendisk *gd)
+@@ -3001,26 +3004,37 @@ static void drbd_release(struct gendisk *gd)
  	/* This is a workaround for kernels that do not pass in the fmode_t argument.*/
  	fmode_t mode = device->open_ro_cnt ? FMODE_READ : FMODE_WRITE;
  

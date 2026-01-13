@@ -1,0 +1,23 @@
+From 0ada76df2c907b41a36e235691818edff1ceff63 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Wed, 14 Jan 2026 11:06:00 +0100
+Subject: [PATCH] Fixup for recent commit 8f11218ce3758 ('drbd: fix an aspect
+ of on-suspended-primary-outdated=force-secondary')
+
+---
+ drbd/drbd_receiver.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drbd/drbd_receiver.c b/drbd/drbd_receiver.c
+index 65c67f0d7..e66fdda2a 100644
+--- a/drbd/drbd_receiver.c
++++ b/drbd/drbd_receiver.c
+@@ -761,7 +761,7 @@ static void apply_local_state_change(struct drbd_connection *connection, enum ao
+ 			if (r == L_WF_BITMAP_T || r == L_SYNC_TARGET || r == L_PAUSED_SYNC_T)
+ 				__change_disk_state(device, D_OUTDATED);
+ 
+-			if (device->open_cnt)
++			if (device->open_rw_cnt || device->open_ro_cnt)
+ 				set_fail_io = true;
+ 		}
+ 		if (resource->role[NOW] == R_PRIMARY && force_demote) {

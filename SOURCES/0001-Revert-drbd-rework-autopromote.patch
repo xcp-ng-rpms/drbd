@@ -1,4 +1,4 @@
-From 8a6d2aa285528ecd35dc61cfee49ca6fede4d52b Mon Sep 17 00:00:00 2001
+From adf72cc18024caa60cd2cac764701de5e2eb2b74 Mon Sep 17 00:00:00 2001
 From: Philipp Reisner <philipp.reisner@linbit.com>
 Date: Fri, 5 Jul 2024 12:00:09 +0200
 Subject: [PATCH] Revert "drbd: rework autopromote"
@@ -46,10 +46,10 @@ index b0a0ee9ee..4c57be0b8 100644
  symbol drbd_release;
  expression gd;
 diff --git a/drbd/drbd_int.h b/drbd/drbd_int.h
-index 50ae2b8e4..752819765 100644
+index abeede189..ebe1b38e5 100644
 --- a/drbd/drbd_int.h
 +++ b/drbd/drbd_int.h
-@@ -1576,8 +1576,7 @@ struct drbd_device {
+@@ -1581,8 +1581,7 @@ struct drbd_device {
  
  	struct drbd_bitmap *bitmap;
  
@@ -60,10 +60,10 @@ index 50ae2b8e4..752819765 100644
  	 * members are protected by what */
  
 diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
-index ad6e4d89c..678cfd756 100644
+index dd1fb2fe4..2a1e23c15 100644
 --- a/drbd/drbd_main.c
 +++ b/drbd/drbd_main.c
-@@ -2713,16 +2713,17 @@ static enum ioc_rv inc_open_count(struct drbd_device *device, blk_mode_t mode)
+@@ -2724,16 +2724,17 @@ static enum ioc_rv inc_open_count(struct drbd_device *device, blk_mode_t mode)
  		r = IOC_ABORT;
  	else if (resource->remote_state_change &&
  		resource->role[NOW] != R_PRIMARY &&
@@ -85,7 +85,7 @@ index ad6e4d89c..678cfd756 100644
  	}
  	read_unlock_irq(&resource->state_rwlock);
  
-@@ -2802,7 +2803,6 @@ static int drbd_open(struct gendisk *gd, blk_mode_t mode)
+@@ -2813,7 +2814,6 @@ static int drbd_open(struct gendisk *gd, blk_mode_t mode)
  	struct drbd_resource *resource = device->resource;
  	long timeout = resource->res_opts.auto_promote_timeout * HZ / 10;
  	enum drbd_state_rv rv = SS_UNKNOWN_ERROR;
@@ -93,7 +93,7 @@ index ad6e4d89c..678cfd756 100644
  	enum ioc_rv r;
  	int err = 0;
  
-@@ -2826,7 +2826,6 @@ static int drbd_open(struct gendisk *gd, blk_mode_t mode)
+@@ -2837,7 +2837,6 @@ static int drbd_open(struct gendisk *gd, blk_mode_t mode)
  	kref_debug_get(&device->kref_debug, 3);
  
  	mutex_lock(&resource->open_release);
@@ -101,7 +101,7 @@ index ad6e4d89c..678cfd756 100644
  
  	timeout = wait_event_interruptible_timeout(resource->twopc_wait,
  						   (r = inc_open_count(device, mode)),
-@@ -2890,7 +2889,7 @@ out:
+@@ -2901,7 +2900,7 @@ out:
  	if (!err) {
  		add_opener(device, rv >= SS_SUCCESS);
  		/* Only interested in first open and last close. */
@@ -110,7 +110,7 @@ index ad6e4d89c..678cfd756 100644
  			struct device_info info;
  
  			device_to_info(&info, device);
-@@ -2898,8 +2897,7 @@ out:
+@@ -2909,8 +2908,7 @@ out:
  			notify_device_state(NULL, 0, device, &info, NOTIFY_CHANGE);
  			mutex_unlock(&notification_mutex);
  		}
@@ -120,7 +120,7 @@ index ad6e4d89c..678cfd756 100644
  
  	mutex_unlock(&resource->open_release);
  	if (err) {
-@@ -2918,10 +2916,8 @@ void drbd_open_counts(struct drbd_resource *resource, int *rw_count_ptr, int *ro
+@@ -2929,10 +2927,8 @@ void drbd_open_counts(struct drbd_resource *resource, int *rw_count_ptr, int *ro
  
  	rcu_read_lock();
  	idr_for_each_entry(&resource->devices, device, vnr) {
@@ -133,7 +133,7 @@ index ad6e4d89c..678cfd756 100644
  	}
  	rcu_read_unlock();
  	*rw_count_ptr = rw_count;
-@@ -2991,9 +2987,14 @@ static void drbd_release(struct gendisk *gd)
+@@ -3002,9 +2998,14 @@ static void drbd_release(struct gendisk *gd)
  	struct drbd_resource *resource = device->resource;
  	int open_rw_cnt, open_ro_cnt;
  
@@ -148,7 +148,7 @@ index ad6e4d89c..678cfd756 100644
  	 * We still want our side effects of drbd_fsync_device():
  	 * wait until all peers confirmed they have all the data, regardless of
  	 * replication protocol, even if that is asynchronous.
-@@ -3001,17 +3002,21 @@ static void drbd_release(struct gendisk *gd)
+@@ -3012,17 +3013,21 @@ static void drbd_release(struct gendisk *gd)
  	 * won't confuse drbd_reject_write_early() or other code paths that may
  	 * check for open_cnt != 0 when they see write requests.
  	 */
@@ -175,7 +175,7 @@ index ad6e4d89c..678cfd756 100644
  	    !test_and_set_bit(DESTROYING_DEV, &device->flags))
  		call_rcu(&device->rcu, drbd_reclaim_device);
  
-@@ -3052,11 +3057,12 @@ static void drbd_release(struct gendisk *gd)
+@@ -3063,11 +3068,12 @@ static void drbd_release(struct gendisk *gd)
  		end_state_change(resource, &irq_flags, "release");
  	}
  
@@ -192,7 +192,7 @@ index ad6e4d89c..678cfd756 100644
  
  		device_to_info(&info, device);
 diff --git a/drbd/drbd_nl.c b/drbd/drbd_nl.c
-index c145bb722..0255f36da 100644
+index 6264e809b..811c0a817 100644
 --- a/drbd/drbd_nl.c
 +++ b/drbd/drbd_nl.c
 @@ -1272,9 +1272,10 @@ void youngest_and_oldest_opener_to_str(struct drbd_device *device, char *buf, si
@@ -234,7 +234,7 @@ index c145bb722..0255f36da 100644
  	list_for_each_entry(o, &device->openers, list) {
  		ts = ktime_to_timespec64(o->opened);
  		time64_to_tm(ts.tv_sec, -sys_tz.tz_minuteswest * 60, &tm);
-@@ -4270,7 +4271,7 @@ static void __device_to_info(struct device_info *info,
+@@ -4254,7 +4255,7 @@ static void __device_to_info(struct device_info *info,
  			     struct drbd_device *device)
  {
  	info->is_intentional_diskless = device->device_conf.intentional_diskless;
@@ -243,7 +243,7 @@ index c145bb722..0255f36da 100644
  
  	rcu_read_lock();
  	if (get_ldev(device)) {
-@@ -4916,10 +4917,8 @@ int drbd_open_ro_count(struct drbd_resource *resource)
+@@ -4911,10 +4912,8 @@ int drbd_open_ro_count(struct drbd_resource *resource)
  	int vnr, open_ro_cnt = 0;
  
  	read_lock_irq(&resource->state_rwlock);
@@ -256,7 +256,7 @@ index c145bb722..0255f36da 100644
  	read_unlock_irq(&resource->state_rwlock);
  
  	return open_ro_cnt;
-@@ -7089,7 +7088,8 @@ static enum drbd_ret_code adm_del_minor(struct drbd_device *device)
+@@ -7091,7 +7090,8 @@ static enum drbd_ret_code adm_del_minor(struct drbd_device *device)
  	notify_device_state(NULL, 0, device, NULL, NOTIFY_DESTROY);
  	mutex_unlock(&notification_mutex);
  
