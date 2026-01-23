@@ -1,6 +1,6 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
-Version: 9.2.15
+Version: 9.2.16
 Release: 1.0%{?dist}
 
 # always require a suitable userland
@@ -32,8 +32,8 @@ BuildRequires: %kernel_module_package_buildreqs
 # on SMAPIv3 in order to be compatible with the current linbit design.
 #
 # Patches generated from this repo/branch:
-# https://github.com/LINBIT/drbd/tree/restore_exact_open_counts_9.2.15
-# with this command: "git format-patch drbd-9.2.15..HEAD^ --no-signature --no-numbered".
+# https://github.com/LINBIT/drbd/tree/restore_exact_open_counts_9.2.16
+# with this command: "git format-patch drbd-9.2.16..HEAD^ --no-signature --no-numbered".
 #
 # The official tarballs to use can be found at this link: https://pkg.linbit.com/
 # Never use GitHub tarballs (https://github.com/LINBIT/drbd/tags), which don't work.
@@ -42,7 +42,7 @@ BuildRequires: %kernel_module_package_buildreqs
 # in the root folder of the DRBD project.
 Patch1001: 0001-Revert-drbd-rework-autopromote.patch
 Patch1002: 0002-Fix-for-Revert-drbd-rework-autopromote.patch
-Patch1003: 0003-drbd-drbd_md_get_buffer-do-not-give-up-early.patch
+Patch1003: 0003-Fixup-for-recent-commit.patch
 
 # rpmbuild --with gcov to set GCOV_PROFILE=y for make
 %bcond_with gcov
@@ -173,6 +173,10 @@ sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" 
 rm -rf %{buildroot}
 
 %changelog
+* Fri Jan 23 2026 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.16-1.0
+- Remove 0003-drbd-drbd_md_get_buffer-do-not-give-up-early.patch
+- Add 0003-Fixup-for-recent-commit.patch
+
 * Mon Dec 08 2025 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.15-1.0
 - Add 0003-drbd-drbd_md_get_buffer-do-not-give-up-early.patch
 
