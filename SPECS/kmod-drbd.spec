@@ -1,7 +1,7 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
 Version: 9.2.16
-Release: 1.0%{?dist}
+Release: 1.1%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
@@ -86,10 +86,7 @@ for the DRBD core and various transports.
 
 %prep
 rm -f %{?my_tmp_files_to_be_removed_in_prep}
-%setup -q -n drbd-%{tarball_version}
-%patch1001 -p1
-%patch1002 -p1
-%patch1003 -p1
+%autosetup -n drbd-%{tarball_version} -p1
 
 %build
 make -C drbd %{_smp_mflags} all KDIR=/lib/modules/%{kernel_version}/build \
@@ -173,6 +170,9 @@ sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" 
 rm -rf %{buildroot}
 
 %changelog
+* Wed May 06 2026 Vincent Michel <vincent.michel@vates.tech> - 9.2.16-1.1
+- Fix the %%patch macro in the specfile to be compatible with rpm 4.20 and above
+
 * Fri Jan 23 2026 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.16-1.0
 - Remove 0003-drbd-drbd_md_get_buffer-do-not-give-up-early.patch
 - Add 0003-Fixup-for-recent-commit.patch
