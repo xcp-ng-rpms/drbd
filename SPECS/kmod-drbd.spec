@@ -7,7 +7,9 @@ Release: 2.0%{?dist}
 Requires: drbd-utils >= 9.27.0
 
 %global tarball_version %(echo "%{version}" | sed -e "s,%{?dist}$,," -e "s,~,-,")
-Source: http://pkg.linbit.com/downloads/drbd/9/drbd-%{tarball_version}.tar.gz
+Source0: http://pkg.linbit.com/downloads/drbd/9/drbd-%{tarball_version}.tar.gz
+# XCP-ng: custom drbd configuration
+Source1: drbd.conf
 
 License: GPLv2+
 Group: System Environment/Kernel
@@ -152,6 +154,9 @@ while read -r mod path; do
 done > %{buildroot}/etc/depmod.d/drbd.conf
 install -D misc/SECURE-BOOT-KEY-linbit.com.der %{buildroot}/etc/pki/linbit/SECURE-BOOT-KEY-linbit.com.der
 
+# XCP-ng: custom drbd configuration
+install -D -m 644 %{SOURCE1} %{buildroot}%{_prefix}/lib/modprobe.d/drbd.conf
+
 %post
 if [ -e "/boot/System.map-%{kernel_version}" ]; then
     /usr/sbin/depmod -aeF "/boot/System.map-%{kernel_version}" "%{kernel_version}" > /dev/null || :
@@ -191,6 +196,8 @@ sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" 
 /etc/pki/linbit/SECURE-BOOT-KEY-linbit.com.der
 /lib/modules/%{kernel_version}/extra/drbd/*.ko
 /lib/modules/%{kernel_version}/extra/drbd/drbd-kernel-compat/handshake/*.ko
+# XCP-ng: custom drbd configuration
+%{_prefix}/lib/modprobe.d/drbd.conf
 
 %clean
 rm -rf %{buildroot}
@@ -200,6 +207,8 @@ rm -rf %{buildroot}
 - Update to upstream version 9.2.18 + upstream patches not part of an upstream release yet
 - Limit number of concurrent resyncs
 - Stability improvement and fixes
+- Add drbd.conf file in /usr/lib/modprobe.d (moved from xcp-ng-release-linstor)
+- Add max_parallel_sync options in drbd.conf
 
 * Fri Jan 23 2026 Ronan Abhamon <ronan.abhamon@vates.tech> - 9.2.16-1.0
 - Remove 0003-drbd-drbd_md_get_buffer-do-not-give-up-early.patch
