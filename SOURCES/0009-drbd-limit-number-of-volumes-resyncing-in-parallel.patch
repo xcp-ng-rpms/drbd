@@ -1,0 +1,478 @@
+From 0d2f376a7d72045a0ae9a8a577cde20bd7f889a9 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Mon, 4 May 2026 14:09:56 +0200
+Subject: [PATCH] drbd: limit number of volumes resyncing in parallel
+
+Today an arbitrary number of volumes can resync simultaneously, slicing
+disk and network bandwidth thinly across all of them. On a host with
+many volumes sharing the same physical disks or network link, total
+time-to-in-sync suffers.
+
+Introduce a runtime-changeable module parameter max_parallel_resyncs
+that caps how many volumes may have an unpaused resync (or verify) at
+any given time. The default of 0 preserves existing behaviour
+(unlimited). Counting is per-volume (struct drbd_device): multiple
+peer_devices of the same volume that resync in parallel still occupy
+a single slot. L_SYNC_S/T and L_VERIFY_S/T count toward the cap; their
+L_PAUSED_* counterparts do not.
+
+When admitting paused volumes, prefer volumes whose resource already
+has a running resync. That way we finish all volumes of one resource
+before starting volumes of the next, instead of spreading the resync
+of every resource thinly across the cluster.
+
+Reuse the existing resync-pause mechanism by adding a new pause-reason
+flag resync_susp_max_parallel[] alongside the existing user / peer /
+dependency / other_c flags. The flag plumbs through the state-change
+snapshot, the resync_suspended() aggregator that maps L_SYNC_* to
+L_PAUSED_SYNC_*, the change-detection notifier path, and the per-
+peer_device suspension-reason printer (shows "max_parallel,").
+
+Re-evaluation runs in three places: on every state change that
+finishes a resync (right next to the existing resume_next_sg() call),
+on every write to /sys/module/drbd/parameters/max_parallel_resyncs,
+and inline in drbd_start_resync() so the very first transition lands
+in L_PAUSED_SYNC_* instead of flicking through L_SYNC_* first.
+
+The flag is a local admission-control decision; it is not propagated
+to peers, so the wire protocol is unchanged. Each node makes its own
+admission decision based on its own max_parallel_resyncs.
+
+Signed-off-by: Philipp Reisner <philipp.reisner@linbit.com>
+---
+ drbd/drbd_int.h          |   3 +
+ drbd/drbd_main.c         |  20 +++++
+ drbd/drbd_sender.c       | 185 +++++++++++++++++++++++++++++++++++++++
+ drbd/drbd_state.c        |  44 +++++++++-
+ drbd/drbd_state.h        |   2 +
+ drbd/drbd_state_change.h |   1 +
+ 6 files changed, 251 insertions(+), 4 deletions(-)
+
+diff --git a/drbd/drbd_int.h b/drbd/drbd_int.h
+index d8af99572..7c46f9ee3 100644
+--- a/drbd/drbd_int.h
++++ b/drbd/drbd_int.h
+@@ -46,6 +46,7 @@
+ /* module parameter, defined in drbd_main.c */
+ extern unsigned int drbd_minor_count;
+ extern unsigned int drbd_protocol_version_min;
++extern unsigned int drbd_max_parallel_resyncs;
+ extern bool drbd_strict_names;
+ 
+ static inline bool drbd_protocol_version_acceptable(unsigned int pv)
+@@ -1333,6 +1334,7 @@ struct drbd_peer_device {
+ 	bool resync_susp_peer[2];
+ 	bool resync_susp_dependency[2];
+ 	bool resync_susp_other_c[2];
++	bool resync_susp_max_parallel[2];
+ 	bool resync_active[2];
+ 	enum drbd_repl_state negotiation_result; /* To find disk state after attach */
+ 	unsigned int send_cnt;
+@@ -2212,6 +2214,7 @@ void drbd_start_resync(struct drbd_peer_device *peer_device,
+ 		       enum drbd_repl_state side, const char *tag);
+ void resume_next_sg(struct drbd_device *device);
+ void suspend_other_sg(struct drbd_device *device);
++void drbd_apply_resync_max_parallel(void);
+ void drbd_resync_finished(struct drbd_peer_device *peer_device,
+ 			  enum drbd_disk_state new_peer_disk_state);
+ void verify_progress(struct drbd_peer_device *peer_device,
+diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
+index e684c5e7a..863ea464e 100644
+--- a/drbd/drbd_main.c
++++ b/drbd/drbd_main.c
+@@ -128,6 +128,26 @@ static const struct kernel_param_ops param_ops_drbd_protocol_version = {
+ 
+ unsigned int drbd_protocol_version_min = PRO_VERSION_8_MIN;
+ module_param_named(protocol_version_min, drbd_protocol_version_min, drbd_protocol_version, 0644);
++
++static int param_set_max_parallel_resyncs(const char *s, const struct kernel_param *kp)
++{
++	int rv = param_set_uint(s, kp);
++
++	if (rv == 0)
++		drbd_apply_resync_max_parallel();
++	return rv;
++}
++
++static const struct kernel_param_ops param_ops_max_parallel_resyncs = {
++	.set = param_set_max_parallel_resyncs,
++	.get = param_get_uint,
++};
++
++unsigned int drbd_max_parallel_resyncs;	/* 0 = unlimited */
++module_param_cb(max_parallel_resyncs, &param_ops_max_parallel_resyncs,
++		&drbd_max_parallel_resyncs, 0644);
++MODULE_PARM_DESC(max_parallel_resyncs,
++	"Cap on volumes resyncing in parallel (0 = unlimited)");
+ #define protocol_version_min_desc								\
+ 	"\n\t\tReject DRBD dialects older than this.\n\t\t"					\
+ 	"Supported: "										\
+diff --git a/drbd/drbd_sender.c b/drbd/drbd_sender.c
+index 2317e1df3..fba5d700e 100644
+--- a/drbd/drbd_sender.c
++++ b/drbd/drbd_sender.c
+@@ -2650,6 +2650,189 @@ void suspend_other_sg(struct drbd_device *device)
+ 	unlock_all_resources();
+ }
+ 
++static bool __device_is_resyncing(struct drbd_device *device)
++{
++	struct drbd_peer_device *peer_device;
++
++	for_each_peer_device_rcu(peer_device, device) {
++		enum drbd_repl_state s = peer_device->repl_state[NOW];
++
++		if (s == L_SYNC_SOURCE || s == L_SYNC_TARGET ||
++		    s == L_VERIFY_S || s == L_VERIFY_T)
++			return true;
++	}
++	return false;
++}
++
++static bool __resource_has_resyncing_device(struct drbd_resource *resource)
++{
++	struct drbd_device *device;
++	int vnr;
++
++	idr_for_each_entry(&resource->devices, device, vnr) {
++		if (__device_is_resyncing(device))
++			return true;
++	}
++	return false;
++}
++
++/* Only admit a device whose unblocking would actually transition it into
++ * L_SYNC_*. Otherwise the slot would be consumed without progress: e.g.,
++ * a volume blocked by both max_parallel and resync-after would stay
++ * paused on the dependency, starving the volume it is waiting for.
++ */
++static bool device_held_by_max_parallel(struct drbd_device *device)
++{
++	struct drbd_peer_device *peer_device;
++
++	for_each_peer_device_rcu(peer_device, device) {
++		enum drbd_repl_state s = peer_device->repl_state[NOW];
++
++		if ((s != L_PAUSED_SYNC_S && s != L_PAUSED_SYNC_T) ||
++		    !peer_device->resync_susp_max_parallel[NOW])
++			continue;
++
++		if (peer_device->resync_susp_user[NOW] ||
++		    peer_device->resync_susp_peer[NOW] ||
++		    peer_device->resync_susp_dependency[NOW] ||
++		    peer_device->resync_susp_other_c[NOW])
++			continue;
++
++		return true;
++	}
++	return false;
++}
++
++static bool set_suspend_resync_device_max_parallel(struct drbd_device *device, bool value)
++{
++	struct drbd_resource *resource = device->resource;
++	struct drbd_peer_device *peer_device;
++
++	begin_state_change_locked(resource, CS_HARD);
++	for_each_peer_device_rcu(peer_device, device) {
++		if (peer_device->resync_susp_max_parallel[NOW] != value)
++			__change_resync_susp_max_parallel(peer_device, value);
++	}
++	return end_state_change_locked(resource, "resync-max-parallel") != SS_NOTHING_TO_DO;
++}
++
++/* Re-evaluate the parallel-resync limit across all volumes and toggle
++ * resync_susp_max_parallel to enforce drbd_max_parallel_resyncs. limit == 0
++ * means unlimited (clear all max_parallel suspensions).
++ */
++void drbd_apply_resync_max_parallel(void)
++{
++	unsigned int limit = READ_ONCE(drbd_max_parallel_resyncs);
++	struct drbd_resource *resource;
++	struct drbd_device *device;
++	unsigned int running = 0;
++	int vnr;
++
++	lock_all_resources();
++	rcu_read_lock();
++
++	if (limit == 0) {
++		for_each_resource_rcu(resource, &drbd_resources) {
++			idr_for_each_entry(&resource->devices, device, vnr)
++				set_suspend_resync_device_max_parallel(device, false);
++		}
++		goto out;
++	}
++
++	for_each_resource_rcu(resource, &drbd_resources) {
++		idr_for_each_entry(&resource->devices, device, vnr) {
++			if (__device_is_resyncing(device))
++				running++;
++		}
++	}
++
++	if (running > limit) {
++		unsigned int excess = running - limit;
++
++		for_each_resource_rcu(resource, &drbd_resources) {
++			if (excess == 0)
++				break;
++			idr_for_each_entry(&resource->devices, device, vnr) {
++				if (excess == 0)
++					break;
++				if (__device_is_resyncing(device)) {
++					if (set_suspend_resync_device_max_parallel(device, true))
++						excess--;
++				}
++			}
++		}
++	} else if (running < limit) {
++		unsigned int slots = limit - running;
++
++		/* Pass 1: top up resources that already have a running resync,
++		 * so we finish all volumes of one resource before starting
++		 * volumes of the next.
++		 */
++		for_each_resource_rcu(resource, &drbd_resources) {
++			if (slots == 0)
++				break;
++			if (!__resource_has_resyncing_device(resource))
++				continue;
++			idr_for_each_entry(&resource->devices, device, vnr) {
++				if (slots == 0)
++					break;
++				if (device_held_by_max_parallel(device)) {
++					if (set_suspend_resync_device_max_parallel(device, false))
++						slots--;
++				}
++			}
++		}
++
++		/* Pass 2: any remaining slots go to volumes of fresh
++		 * resources.
++		 */
++		for_each_resource_rcu(resource, &drbd_resources) {
++			if (slots == 0)
++				break;
++			idr_for_each_entry(&resource->devices, device, vnr) {
++				if (slots == 0)
++					break;
++				if (device_held_by_max_parallel(device)) {
++					if (set_suspend_resync_device_max_parallel(device, false))
++						slots--;
++				}
++			}
++		}
++	}
++
++out:
++	rcu_read_unlock();
++	unlock_all_resources();
++}
++
++/* Caller already holds lock_all_resources(). Returns true if @device is
++ * allowed to start a new resync under the parallel-resync limit.
++ */
++static bool __device_max_parallel_admit(struct drbd_device *device)
++{
++	unsigned int limit = READ_ONCE(drbd_max_parallel_resyncs);
++	struct drbd_resource *resource;
++	struct drbd_device *d;
++	unsigned int running = 0;
++	int vnr;
++
++	if (limit == 0)
++		return true;
++
++	if (__device_is_resyncing(device))
++		return true;	/* already counted */
++
++	for_each_resource_rcu(resource, &drbd_resources) {
++		idr_for_each_entry(&resource->devices, d, vnr) {
++			if (d == device)
++				continue;
++			if (__device_is_resyncing(d))
++				running++;
++		}
++	}
++	return running < limit;
++}
++
+ /* caller must hold resources_mutex */
+ enum drbd_ret_code drbd_resync_after_valid(struct drbd_device *device, int resync_after)
+ {
+@@ -2936,6 +3119,8 @@ skip_helper:
+ 
+ 	begin_state_change_locked(device->resource, CS_VERBOSE);
+ 	__change_resync_susp_dependency(peer_device, !__drbd_may_sync_now(peer_device));
++	__change_resync_susp_max_parallel(peer_device,
++					  !__device_max_parallel_admit(device));
+ 	__change_repl_state(peer_device, side);
+ 	if (side == L_SYNC_TARGET)
+ 		init_resync_stable_bits(peer_device);
+diff --git a/drbd/drbd_state.c b/drbd/drbd_state.c
+index 0fca285fc..ac4409197 100644
+--- a/drbd/drbd_state.c
++++ b/drbd/drbd_state.c
+@@ -376,6 +376,9 @@ struct drbd_state_change *remember_state_change(struct drbd_resource *resource,
+ 			memcpy(peer_device_state_change->resync_susp_other_c,
+ 			       peer_device->resync_susp_other_c,
+ 			       sizeof(peer_device->resync_susp_other_c));
++			memcpy(peer_device_state_change->resync_susp_max_parallel,
++			       peer_device->resync_susp_max_parallel,
++			       sizeof(peer_device->resync_susp_max_parallel));
+ 			memcpy(peer_device_state_change->resync_active,
+ 			       peer_device->resync_active,
+ 			       sizeof(peer_device->resync_active));
+@@ -462,6 +465,7 @@ void copy_old_to_new_state_change(struct drbd_state_change *state_change)
+ 		OLD_TO_NEW(p->resync_susp_peer);
+ 		OLD_TO_NEW(p->resync_susp_dependency);
+ 		OLD_TO_NEW(p->resync_susp_other_c);
++		OLD_TO_NEW(p->resync_susp_max_parallel);
+ 		OLD_TO_NEW(p->resync_active);
+ 	}
+ 
+@@ -547,6 +551,8 @@ static bool state_has_changed(struct drbd_resource *resource)
+ 				peer_device->resync_susp_dependency[NEW] ||
+ 			    peer_device->resync_susp_other_c[OLD] !=
+ 				peer_device->resync_susp_other_c[NEW] ||
++			    peer_device->resync_susp_max_parallel[OLD] !=
++				peer_device->resync_susp_max_parallel[NEW] ||
+ 			    peer_device->resync_active[OLD] !=
+ 				peer_device->resync_active[NEW] ||
+ 			    peer_device->uuid_flags & UUID_FLAG_GOT_STABLE)
+@@ -592,6 +598,8 @@ static void ___begin_state_change(struct drbd_resource *resource)
+ 				peer_device->resync_susp_dependency[NOW];
+ 			peer_device->resync_susp_other_c[NEW] =
+ 				peer_device->resync_susp_other_c[NOW];
++			peer_device->resync_susp_max_parallel[NEW] =
++				peer_device->resync_susp_max_parallel[NOW];
+ 			peer_device->resync_active[NEW] =
+ 				peer_device->resync_active[NOW];
+ 		}
+@@ -866,6 +874,8 @@ static enum drbd_state_rv ___end_state_change(struct drbd_resource *resource, st
+ 				peer_device->resync_susp_dependency[NEW];
+ 			peer_device->resync_susp_other_c[NOW] =
+ 				peer_device->resync_susp_other_c[NEW];
++			peer_device->resync_susp_max_parallel[NOW] =
++				peer_device->resync_susp_max_parallel[NEW];
+ 			peer_device->resync_active[NOW] =
+ 				peer_device->resync_active[NEW];
+ 		}
+@@ -1110,6 +1120,7 @@ static bool resync_suspended(struct drbd_peer_device *peer_device, enum which_st
+ {
+ 	return peer_device->resync_susp_user[which] ||
+ 	       peer_device->resync_susp_peer[which] ||
++	       peer_device->resync_susp_max_parallel[which] ||
+ 	       resync_susp_comb_dep(peer_device, which);
+ }
+ 
+@@ -1131,6 +1142,8 @@ static int scnprintf_resync_suspend_flags(char *buffer, size_t size,
+ 		b += scnprintf(b, end - b, "after dependency,");
+ 	if (peer_device->resync_susp_other_c[which])
+ 		b += scnprintf(b, end - b, "connection dependency,");
++	if (peer_device->resync_susp_max_parallel[which])
++		b += scnprintf(b, end - b, "max-parallel,");
+ 	if (is_sync_source_state(peer_device, which) && device->disk_state[which] <= D_INCONSISTENT)
+ 		b += scnprintf(b, end - b, "disk inconsistent,");
+ 
+@@ -1929,7 +1942,8 @@ static bool drbd_is_sync_target_candidate(struct drbd_peer_device *peer_device)
+ 
+ 	if (peer_device->resync_susp_dependency[NEW] ||
+ 			peer_device->resync_susp_peer[NEW] ||
+-			peer_device->resync_susp_user[NEW])
++			peer_device->resync_susp_user[NEW] ||
++			peer_device->resync_susp_max_parallel[NEW])
+ 		return false;
+ 
+ 	if (peer_device->disk_state[NEW] < D_OUTDATED)
+@@ -3513,7 +3527,8 @@ static void notify_state_change(struct drbd_state_change *state_change)
+ 		    HAS_CHANGED(p->resync_susp_user) ||
+ 		    HAS_CHANGED(p->resync_susp_peer) ||
+ 		    HAS_CHANGED(p->resync_susp_dependency) ||
+-		    HAS_CHANGED(p->resync_susp_other_c))
++		    HAS_CHANGED(p->resync_susp_other_c) ||
++		    HAS_CHANGED(p->resync_susp_max_parallel))
+ 			REMEMBER_STATE_CHANGE(notify_peer_device_state_change,
+ 					      p, NOTIFY_CHANGE);
+ 	}
+@@ -3914,6 +3929,8 @@ static int w_after_state_change(struct drbd_work *w, int unused)
+ 			bool *resync_susp_user = peer_device_state_change->resync_susp_user;
+ 			bool *resync_susp_peer = peer_device_state_change->resync_susp_peer;
+ 			bool *resync_susp_dependency = peer_device_state_change->resync_susp_dependency;
++			bool *resync_susp_max_parallel =
++				peer_device_state_change->resync_susp_max_parallel;
+ 			union drbd_state new_state =
+ 				state_change_word(state_change, n_device, n_connection, NEW);
+ 			bool send_uuids, send_state = false;
+@@ -4016,7 +4033,8 @@ static int w_after_state_change(struct drbd_work *w, int unused)
+ 			if (repl_state[NEW] >= L_ESTABLISHED &&
+ 			    ((resync_susp_comb_dep_sc(state_change, n_device, n_connection, OLD) !=
+ 			      resync_susp_comb_dep_sc(state_change, n_device, n_connection, NEW)) ||
+-			     (resync_susp_user[OLD] != resync_susp_user[NEW])))
++			     (resync_susp_user[OLD] != resync_susp_user[NEW]) ||
++			     (resync_susp_max_parallel[OLD] != resync_susp_max_parallel[NEW])))
+ 				send_state = true;
+ 
+ 			/* finished resync, tell sync source */
+@@ -4066,9 +4084,21 @@ static int w_after_state_change(struct drbd_work *w, int unused)
+ 			/* A resync finished or aborted, wake paused devices... */
+ 			if ((repl_state[OLD] > L_ESTABLISHED && repl_state[NEW] <= L_ESTABLISHED) ||
+ 			    (resync_susp_peer[OLD] && !resync_susp_peer[NEW]) ||
+-			    (resync_susp_user[OLD] && !resync_susp_user[NEW]))
++			    (resync_susp_user[OLD] && !resync_susp_user[NEW])) {
+ 				/* ldev_safe: ref from extra_ldev_ref_for_after_state_chg() */
+ 				resume_next_sg(device);
++				drbd_apply_resync_max_parallel();
++			} else {
++				enum drbd_repl_state old = repl_state[OLD];
++				enum drbd_repl_state new = repl_state[NEW];
++
++				/* A resync got paused; re-evaluate max_parallel_resyncs. */
++				if ((old == L_SYNC_SOURCE || old == L_SYNC_TARGET ||
++				     old == L_VERIFY_S || old == L_VERIFY_T) &&
++				    !(new == L_SYNC_SOURCE || new == L_SYNC_TARGET ||
++				      new == L_VERIFY_S || new == L_VERIFY_T))
++					drbd_apply_resync_max_parallel();
++			}
+ 
+ 			/* sync target done with resync. Explicitly notify all peers. Our sync
+ 			   source should even know by himself, but the others need that info. */
+@@ -6134,6 +6164,12 @@ void __change_resync_susp_dependency(struct drbd_peer_device *peer_device,
+ 	peer_device->resync_susp_dependency[NEW] = value;
+ }
+ 
++void __change_resync_susp_max_parallel(struct drbd_peer_device *peer_device,
++				       bool value)
++{
++	peer_device->resync_susp_max_parallel[NEW] = value;
++}
++
+ static void log_current_uuids(struct drbd_device *device)
+ {
+ 	struct drbd_peer_device *peer_device;
+diff --git a/drbd/drbd_state.h b/drbd/drbd_state.h
+index 241cf0929..2aa314f69 100644
+--- a/drbd/drbd_state.h
++++ b/drbd/drbd_state.h
+@@ -167,6 +167,8 @@ void __change_resync_susp_peer(struct drbd_peer_device *peer_device,
+ 			       bool value);
+ void __change_resync_susp_dependency(struct drbd_peer_device *peer_device,
+ 				     bool value);
++void __change_resync_susp_max_parallel(struct drbd_peer_device *peer_device,
++				       bool value);
+ void apply_connect(struct drbd_connection *connection, bool commit);
+ 
+ struct drbd_work;
+diff --git a/drbd/drbd_state_change.h b/drbd/drbd_state_change.h
+index 02675e206..d04dd7e59 100644
+--- a/drbd/drbd_state_change.h
++++ b/drbd/drbd_state_change.h
+@@ -42,6 +42,7 @@ struct drbd_peer_device_state_change {
+ 	bool resync_susp_peer[2];
+ 	bool resync_susp_dependency[2];
+ 	bool resync_susp_other_c[2];
++	bool resync_susp_max_parallel[2];
+ 	bool resync_active[2];
+ };
+ 

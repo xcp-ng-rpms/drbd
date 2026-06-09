@@ -1,0 +1,49 @@
+From d8892467521c3406480fefcbd84cc57c1ded64b2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Christoph=20B=C3=B6hmwalder?=
+ <christoph.boehmwalder@linbit.com>
+Date: Mon, 11 May 2026 17:36:45 +0200
+Subject: [PATCH] build: stamp compat.h against include/config/auto.conf, not
+ .config
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Upstream Linux v6.12 commit aaed5c7739be ("kbuild: slim down package
+for building external modules") removed the explicit copy of .config
+into the linux-headers Debian package built by make bindeb-pkg. With
+that change, $(objtree)/.config is absent in installed headers for any
+kernel produced via stock bindeb-pkg, and the date -r / touch -r calls
+that drive the compat-h freshness check abort the build.
+
+include/config/auto.conf is regenerated from .config on every kconfig
+change, is part of the public kbuild interface, and is shipped by every
+kernel-headers package (Ubuntu, Debian, RHEL kernel-devel, and stock
+bindeb-pkg all include it). Use it as the freshness reference instead.
+
+Signed-off-by: Christoph Böhmwalder <christoph.boehmwalder@linbit.com>
+---
+ drbd/Kbuild | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drbd/Kbuild b/drbd/Kbuild
+index 80ec69dcc..a26e084d6 100644
+--- a/drbd/Kbuild
++++ b/drbd/Kbuild
+@@ -82,7 +82,7 @@ patch-target := $(obj)/dummy-for-patch.o
+ $(patch-target): $(obj)/dummy-for-compat-h.o
+ 	@true
+ 
+-ifneq ($(shell date -r $(objtree)/.config),$(shell date -r $(obj.build)/.config.timestamp 2> /dev/null))
++ifneq ($(shell date -r $(objtree)/include/config/auto.conf),$(shell date -r $(obj.build)/.config.timestamp 2> /dev/null))
+ COMPAT_FORCE := FORCE
+ endif
+ 
+@@ -137,7 +137,7 @@ filechk_compat.h = { printf '$(obj.build)/%s ' $(patsubst $(obj.build)/%,%,$(TES
+ 
+ $(compat.h): $(TEST_R) FORCE
+ 	$(call filechk,compat.h)
+-	$(Q)touch -r $(objtree)/.config $(obj.build)/.config.timestamp
++	$(Q)touch -r $(objtree)/include/config/auto.conf $(obj.build)/.config.timestamp
+ 
+ # Generate / find from cache the compat.patch.
+ # If we used an old compat.patch from the cache,

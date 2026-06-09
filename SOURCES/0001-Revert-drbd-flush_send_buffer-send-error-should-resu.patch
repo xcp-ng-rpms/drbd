@@ -1,0 +1,84 @@
+From 956e4879de725f3271468b8077ff6839215fa130 Mon Sep 17 00:00:00 2001
+From: Joel Colledge <joel.colledge@linbit.com>
+Date: Thu, 9 Apr 2026 15:13:59 +0200
+Subject: [PATCH] Revert "drbd: flush_send_buffer: send error should result in
+ state change"
+
+This reverts commit 07742bcdc1179354c33197100aa14e8bf5897a67.
+
+The problem fixed by the above commit was also fixed by
+commit b29dba31e929 ("drbd: flush_send_buffer() result needs to be
+checked"), so reverting does not introduce a regression.
+
+Revert this commit because it caused a problem when the connection was
+lost at a particular moment, as described. S is the sender thread, R is
+the receiver thread.
+
+Initial steps:
+
+* S: Prepare header for P_DATA in `sbuf`, not sent because corked.
+* Connection lost.
+* S: Before sending data in `__send_bio`, call `flush_send_buffer`.
+  Connection lost so `conn( -> NetworkFailure)`.
+
+Now S enters a busy loop in `drbd_sender`:
+
+* Still bytes in `sbuf`, so `wait_for_sender_todo -> drbd_uncork ->
+  flush_send_buffer` changes `conn( -> NetworkFailure)`.
+* `wait_for_sender_todo` returns quickly although no todo because
+  `drbd_uncork` returns error.
+* `process_sender_todo` does nothing.
+
+This creates this loop:
+
+* R: `conn_disconnect` runs, changes `conn( -> Unconnected)`.
+* R restarts.
+* S: In busy loop changes `conn( -> NetworkFailure)`.
+* R: `conn_connect` fails to change `conn( -> Connecting)` because of
+  NetworkFailure state.
+
+The resulting logs look like this:
+
+drbd res peer: PingAck did not arrive in time.
+drbd res peer: conn( Connected -> NetworkFailure ) peer( Secondary -> Unknown )
+drbd res/0 drbd1 peer: pdsk( UpToDate -> DUnknown ) repl( Established -> Off )
+drbd res tcp:peer: dtt_send_page: size=40 len=40 sent=-4
+drbd res peer: Terminating sender thread
+drbd res peer: Starting sender thread (peer-node-id 1)
+drbd res/0 drbd1: new current UUID: D6391EA7BA692A99 weak: FFFFFFFFFFFFFFFA
+||:
+[Repeated section]
+drbd res peer: Connection closed
+drbd res peer: conn( NetworkFailure -> Unconnected ) [disconnected]
+drbd res peer: Restarting receiver thread
+drbd res peer: conn( Unconnected -> NetworkFailure )
+drbd res: State change failed: In transient state, retry after next state change (-18)
+drbd res peer: Failed: conn( NetworkFailure -> Connecting ) [connecting]
+drbd res peer: Terminating sender thread
+drbd res peer: Starting sender thread (peer-node-id 1)
+:||
+
+Depending on the timing in the environment, DRBD might escape from this
+loop quickly. However, it has been observed to continue for 1000s of
+iterations over many minutes.
+
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+---
+ drbd/drbd_main.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
+index 5394db5e8..e684c5e7a 100644
+--- a/drbd/drbd_main.c
++++ b/drbd/drbd_main.c
+@@ -1026,9 +1026,7 @@ static int flush_send_buffer(struct drbd_connection *connection, enum drbd_strea
+ 		(sbuf->additional_size ? MSG_MORE : 0);
+ 	offset = sbuf->unsent - (char *)page_address(sbuf->page);
+ 	err = tr_ops->send_page(transport, drbd_stream, sbuf->page, offset, size, flags);
+-	if (err) {
+-		change_cstate(connection, C_NETWORK_FAILURE, CS_HARD);
+-	} else {
++	if (!err) {
+ 		sbuf->unsent =
+ 		sbuf->pos += sbuf->allocated_size;      /* send buffer submitted! */
+ 	}

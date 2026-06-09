@@ -1,0 +1,46 @@
+From 12df60bc6ec2881a036a76a735341a1aa6ccaefa Mon Sep 17 00:00:00 2001
+From: Joel Colledge <joel.colledge@linbit.com>
+Date: Tue, 21 Apr 2026 13:42:21 +0200
+Subject: [PATCH] misc: add prepare-commit-msg script to add signoff
+
+Do not add signoff on merge commits.
+
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+---
+ README.md               |  2 +-
+ misc/prepare-commit-msg | 13 +++++++++++++
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+ create mode 100755 misc/prepare-commit-msg
+
+diff --git a/README.md b/README.md
+index cc1bac04c..9ea49d314 100644
+--- a/README.md
++++ b/README.md
+@@ -29,7 +29,7 @@ curl -L https://github.com/torvalds/linux/raw/master/scripts/checkpatch.pl | sud
+ sudo chmod +x /usr/local/bin/checkpatch.pl
+ curl -L https://github.com/torvalds/linux/raw/master/scripts/spelling.txt | sudo tee /usr/local/bin/spelling.txt | wc
+ sudo echo > /usr/local/bin/const_structs.checkpatch
+-cp misc/pre-commit misc/commit-msg .git/hooks/
++cp misc/pre-commit misc/prepare-commit-msg misc/commit-msg .git/hooks/
+ ```
+ 
+ # Building DRBD
+diff --git a/misc/prepare-commit-msg b/misc/prepare-commit-msg
+new file mode 100755
+index 000000000..c0be8f66f
+--- /dev/null
++++ b/misc/prepare-commit-msg
+@@ -0,0 +1,13 @@
++#!/bin/sh
++
++NAME=$(git config user.name)
++EMAIL=$(git config user.email)
++
++[ -z "$NAME" ] && { echo "empty git config user.name"; exit 1; }
++[ -z "$EMAIL" ] && { echo "empty git config user.email"; exit 1; }
++
++[ "$2" = "merge" ] && exit 0
++
++git interpret-trailers --if-exists doNothing --trailer \
++    "Signed-off-by: $NAME <$EMAIL>" \
++    --in-place "$1"

@@ -1,0 +1,57 @@
+From df38d2887517bb1891c33c6531f4aa750e04f54d Mon Sep 17 00:00:00 2001
+From: Roland Kammerer <roland.kammerer@linbit.com>
+Date: Tue, 28 Apr 2026 12:12:54 +0200
+Subject: [PATCH] containers: add Ubuntu Resolute
+
+Signed-off-by: Roland Kammerer <roland.kammerer@linbit.com>
+---
+ Makefile                   |  2 +-
+ docker/Dockerfile.resolute | 26 ++++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+ create mode 100644 docker/Dockerfile.resolute
+
+diff --git a/Makefile b/Makefile
+index 9856907f6..0dfd102e5 100644
+--- a/Makefile
++++ b/Makefile
+@@ -31,7 +31,7 @@ ARCH ?= amd64
+ ifneq ($(strip $(ARCH)),)
+ DOCKERREGISTRY := $(DOCKERREGISTRY)/$(ARCH)
+ endif
+-DOCKERIMAGES = rhel7 rhel8 rhel9 rhel10 focal jammy noble flatcar amzn2 sles15
++DOCKERIMAGES = rhel7 rhel8 rhel9 rhel10 focal jammy noble resolute flatcar amzn2 sles15
+ DOCKERIMAGESTARGETS = $(addprefix dockerimage.,$(DOCKERIMAGES))
+ 
+ # Use the SPAAS (spatch as a service) online service
+diff --git a/docker/Dockerfile.resolute b/docker/Dockerfile.resolute
+new file mode 100644
+index 000000000..0c3e6fb40
+--- /dev/null
++++ b/docker/Dockerfile.resolute
+@@ -0,0 +1,26 @@
++FROM ubuntu:resolute
++
++RUN apt-get update && \
++	apt-get install -y \
++		curl \
++		diffutils \
++		elfutils \
++		gcc \
++		gnupg \
++		kmod \
++		make \
++		patch \
++		perl \
++		python3-setuptools \
++	&& \
++	apt-get clean && \
++	cd /tmp && \
++	curl -fsSL https://github.com/LINBIT/python-lbdist/archive/master.tar.gz | tar vxz && \
++	( cd python-lbdist-master && python3 setup.py install ) && \
++	rm -rf python-lbdist-master
++
++COPY /entry.sh /
++COPY /drbd.tar.gz /
++COPY /pkgs /pkgs
++
++ENTRYPOINT /entry.sh

@@ -1,0 +1,42 @@
+From 410407a20f76627f68aff308d957d1cea9457154 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Thu, 21 May 2026 11:44:34 +0200
+Subject: [PATCH] drbd: initialize drbd_resources list head statically
+
+When the max_parallel_resyncs module parameter is set at load time,
+the kernel processes module parameters in parse_args() before invoking
+the module init function.
+The custom setter param_set_max_parallel_resyncs() calls
+drbd_apply_resync_max_parallel(), At that point the list
+head is still zeroed BSS, so for_each_resource() dereferences a NULL
+next pointer and oopses.
+
+Fix this by declaring drbd_resources with LIST_HEAD().
+
+Signed-off-by: Philipp Reisner <philipp.reisner@linbit.com>
+---
+ drbd/drbd_main.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/drbd/drbd_main.c b/drbd/drbd_main.c
+index 863ea464e..76fcd5350 100644
+--- a/drbd/drbd_main.c
++++ b/drbd/drbd_main.c
+@@ -170,7 +170,7 @@ module_param_named(strict_names, drbd_strict_names, drbd_strict_names, 0644);
+  * as member "struct gendisk *vdisk;"
+  */
+ struct idr drbd_devices;
+-struct list_head drbd_resources;
++LIST_HEAD(drbd_resources);
+ static DEFINE_SPINLOCK(drbd_devices_lock);
+ DEFINE_MUTEX(resources_mutex);
+ 
+@@ -4492,8 +4492,6 @@ static int __init drbd_init(void)
+ 	drbd_proc = NULL; /* play safe for drbd_cleanup */
+ 	idr_init(&drbd_devices);
+ 
+-	INIT_LIST_HEAD(&drbd_resources);
+-
+ 	err = register_pernet_device(&drbd_pernet_ops);
+ 	if (err) {
+ 		pr_err("unable to register net namespace handlers\n");

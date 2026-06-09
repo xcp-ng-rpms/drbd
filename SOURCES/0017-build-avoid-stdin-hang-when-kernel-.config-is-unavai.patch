@@ -1,0 +1,65 @@
+From 947c7f1b7e8c9f0016cc01d8ae9de54e61360e27 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Christoph=20B=C3=B6hmwalder?=
+ <christoph.boehmwalder@linbit.com>
+Date: Thu, 21 May 2026 17:56:10 +0200
+Subject: [PATCH] build: avoid stdin hang when kernel .config is unavailable
+
+Commit d889246752 ("build: stamp compat.h against include/config/auto.conf,
+not .config") fixed the freshness check for kernels installed via stock
+bindeb-pkg, where $(objtree)/.config is no longer shipped since Linux
+v6.12 commit aaed5c7739be ("kbuild: slim down package for building external
+modules").
+
+The .kernel.config.gz recipe has the same assumption baked in: when neither
+$(objtree)/.config nor $(srctree)/.config exists, the kconfig variable
+expands to the empty string, config= stays empty, and "cat $config" reads
+from stdin and hangs the build forever.
+
+Add include/config/auto.conf as a third fallback in the wildcard. It is
+regenerated from .config on every kconfig change and is shipped by every
+modern kernel-headers package, so it is always present when the .config
+file is not. The CONFIG_*=... assignments it contains are sufficient for
+the documentation purpose of this artifact (it is shipped as %doc
+k-config-<kernelrelease>.gz and not consumed by anything functional).
+
+Also guard the cat with a non-empty check so that even if all three
+candidates are absent the recipe emits a marker line instead of blocking
+on stdin.
+
+Signed-off-by: Christoph Boehmwalder <christoph.boehmwalder@linbit.com>
+---
+ drbd/Kbuild | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/drbd/Kbuild b/drbd/Kbuild
+index a26e084d6..6979d5c1e 100644
+--- a/drbd/Kbuild
++++ b/drbd/Kbuild
+@@ -286,7 +286,7 @@ endef
+ $(obj.build)/.drbd_kernelrelease: /dev/null FORCE
+ 	$(call filechk,.drbd_kernelrelease)
+ 
+-kconfig := $(realpath $(word 1,$(wildcard $(objtree)/.config $(srctree)/.config)))
++kconfig := $(realpath $(word 1,$(wildcard $(objtree)/.config $(srctree)/.config $(objtree)/include/config/auto.conf)))
+ $(obj.build)/.kernel.config.gz: $(obj.build)/.drbd_kernelrelease $(kconfig)
+ 	@$(kecho) '  GEN     $@ $(echo-why)'
+ 	$(Q)config=$(kconfig)                                   ; \
+@@ -294,10 +294,14 @@ $(obj.build)/.kernel.config.gz: $(obj.build)/.drbd_kernelrelease $(kconfig)
+ 	  echo "#  `$(CC) -v 2>&1 | tail -1`"               ; \
+ 	  echo "# against this kernelrelease:"              ; \
+ 	  sed 's/^/#  /' $<                                 ; \
+-	  echo    "# kernel .config from"                   ; \
+-	  echo    "#  $$config"                             ; \
+-	  echo -e "# follows\n#\n"                          ; \
+-	  cat $$config ; } | gzip > $@.new && mv $@.new $@
++	  if [ -n "$$config" ]; then                          \
++	    echo    "# kernel .config from"                 ; \
++	    echo    "#  $$config"                           ; \
++	    echo -e "# follows\n#\n"                        ; \
++	    cat $$config                                    ; \
++	  else                                                \
++	    echo -e "# kernel .config not available\n#\n"   ; \
++	  fi ; } | gzip > $@.new && mv $@.new $@
+ 
+ # for some reason some of the commands below only work correctly in bash,
+ # and not in e.g. dash. I'm too lazy to fix it to be compatible.
