@@ -1,0 +1,59 @@
+From 7ede778810ce872ab1ac3f866a8a524a73c45d77 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Thu, 28 May 2026 19:38:40 +0200
+Subject: [PATCH] drbd: fix list corruption when freeing peer_req from send_oos
+ list, part 2
+
+cleanup_unacked_peer_requests() splices connection->peer_requests onto
+a work_list and then onto peer_ack_connection->send_oos via
+drbd_queue_send_out_of_sync(), just like got_peer_ack() does. The fix
+for got_peer_ack() (clearing EE_ON_RECV_ORDER and setting EE_ON_SEND_OOS
+on peer_requests that move to send_oos) was not applied to this second
+producer.
+
+As a result, when a connection drops with peer_requests still pending,
+those peer_requests land on send_oos with EE_ON_RECV_ORDER still set.
+drbd_send_oos_from() then list_del's the entry under send_oos_lock and
+calls drbd_free_peer_req(), which sees EE_ON_RECV_ORDER, takes
+peer_reqs_lock, and list_del's the already-poisoned entry a second
+time:
+
+  drbd ... Connection closed
+  list_del corruption, ...->next is LIST_POISON1 (dead000000000100)
+  kernel BUG at lib/list_debug.c:56!
+   __list_del_entry_valid_or_report.cold+0x5c/0x6f
+   drbd_free_peer_req+0xda/0x1b0 [drbd]
+   drbd_send_oos_from+0x20c/0x260 [drbd]
+   drbd_send_out_of_sync_wf+0x50/0x80 [drbd]
+   drbd_sender+0x166/0x500 [drbd]
+
+Fix this by applying the same flag dance as got_peer_ack(): when the
+peer_req has send_oos_pending and will be moved to send_oos, clear
+EE_ON_RECV_ORDER and set EE_ON_SEND_OOS so drbd_free_peer_req() does
+not later try to list_del it under peer_reqs_lock.
+
+Fixes: 198d4ebdaa12 ("drbd: distinguish send_oos list membership with EE_ON_SEND_OOS")
+Signed-off-by: Philipp Reisner <philipp.reisner@linbit.com>
+---
+ drbd/drbd_receiver.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/drbd/drbd_receiver.c b/drbd/drbd_receiver.c
+index f26fda29f..7d1cc155b 100644
+--- a/drbd/drbd_receiver.c
++++ b/drbd/drbd_receiver.c
+@@ -11223,8 +11223,12 @@ static void cleanup_unacked_peer_requests(struct drbd_connection *connection)
+ 
+ 		peer_req->send_oos_pending = drbd_calculate_send_oos_pending(device, 0);
+ 		any_send_oos_pending |= peer_req->send_oos_pending;
+-		if (!peer_req->send_oos_pending)
+-			drbd_free_peer_req(peer_req);
++		if (peer_req->send_oos_pending) {
++			peer_req->flags &= ~EE_ON_RECV_ORDER;
++			peer_req->flags |= EE_ON_SEND_OOS;
++		} else {
++			drbd_free_peer_req(peer_req); /* list_del() because EE_ON_RECV_ORDER */
++		}
+ 	}
+ 
+ 	drbd_queue_send_out_of_sync(connection, &work_list, any_send_oos_pending);

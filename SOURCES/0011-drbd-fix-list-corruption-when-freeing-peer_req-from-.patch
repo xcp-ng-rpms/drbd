@@ -1,0 +1,81 @@
+From d7eea74d67e5909450bd8555597c9a143f22fbc3 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Thu, 14 May 2026 23:58:16 +0200
+Subject: [PATCH] drbd: fix list corruption when freeing peer_req from send_oos
+ list
+
+When got_peer_ack() splices a peer_request from connection->peer_requests
+onto peer_ack_connection->send_oos via drbd_queue_send_out_of_sync(), the
+EE_ON_RECV_ORDER flag is not cleared. That flag was originally a
+1:1 marker for membership in connection->peer_requests, which is
+protected by connection->peer_reqs_lock; send_oos is a different list,
+protected by send_oos_lock.
+
+drbd_send_oos_from() then iterates send_oos in parallel from multiple
+sender threads (one per oos_node_id), each clearing its bit in
+send_oos_pending. The last sender that drives send_oos_pending to zero
+calls drbd_free_peer_req() outside send_oos_lock.
+drbd_free_peer_req() sees EE_ON_RECV_ORDER set, takes peer_reqs_lock,
+and list_del's a node that is actually linked on send_oos. Concurrent
+operations on send_oos under send_oos_lock (other senders, or
+list_splice_tail() in drbd_queue_send_out_of_sync()) then corrupt the
+list:
+
+  list_del corruption. next->prev should be ..., but was ...
+  kernel BUG at lib/list_debug.c:65!
+   ? drbd_free_peer_req+0xe2/0x1b0 [drbd]
+   drbd_send_out_of_sync_wf+0x1be/0x260 [drbd]
+   drbd_sender+0x166/0x510 [drbd]
+
+Fix this by removing the peer_request from send_oos and clearing
+EE_ON_RECV_ORDER in drbd_send_oos_from(), under send_oos_lock, before
+calling drbd_free_peer_req(). Call drbd_send_oos_next_req() before the
+list_del so the iteration anchor stays on the list while the next
+position is computed.
+
+Fixes: 31f14b906312 ("drbd: send P_OUT_OF_SYNC after P_PEER_ACK in parallel")
+Co-developed-by: Joel Colledge <joel.colledge@linbit.com>
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+Signed-off-by: Philipp Reisner <philipp.reisner@linbit.com>
+---
+ drbd/drbd_receiver.c | 19 ++++++++++++-------
+ 1 file changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/drbd/drbd_receiver.c b/drbd/drbd_receiver.c
+index c5fafe2dd..e8b18ab50 100644
+--- a/drbd/drbd_receiver.c
++++ b/drbd/drbd_receiver.c
+@@ -11011,21 +11011,26 @@ static void drbd_send_oos_from(struct drbd_connection *oos_connection, int peer_
+ 	while (peer_req) {
+ 		struct drbd_peer_device *peer_device =
+ 			conn_peer_device(oos_connection, peer_req->peer_device->device->vnr);
+-		struct drbd_peer_request *free_peer_req = NULL;
++		struct drbd_peer_request *next_peer_req;
++		bool free_it;
+ 
+ 		/* Ignore errors and keep iterating to clear up list */
+ 		drbd_send_out_of_sync(peer_device, peer_req->i.sector, peer_req->i.size);
+ 
+ 		spin_lock_irq(&peer_ack_connection->send_oos_lock);
+ 		peer_req->send_oos_pending &= ~NODE_MASK(oos_node_id);
+-		if (!peer_req->send_oos_pending)
+-			free_peer_req = peer_req;
+-
+-		peer_req = drbd_send_oos_next_req(peer_ack_connection, oos_node_id, peer_req);
++		next_peer_req = drbd_send_oos_next_req(peer_ack_connection, oos_node_id, peer_req);
++		free_it = !peer_req->send_oos_pending;
++		if (free_it) {
++			peer_req->flags &= ~EE_ON_RECV_ORDER;
++			list_del(&peer_req->recv_order);
++		}
+ 		spin_unlock_irq(&peer_ack_connection->send_oos_lock);
+ 
+-		if (free_peer_req)
+-			drbd_free_peer_req(free_peer_req);
++		if (free_it)
++			drbd_free_peer_req(peer_req);
++
++		peer_req = next_peer_req;
+ 	}
+ 
+ 	kref_debug_put(&peer_ack_connection->kref_debug, 18);

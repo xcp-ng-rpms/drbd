@@ -1,0 +1,46 @@
+From 062eb61f1cd7f8e5202d0d8d3099d7f40478ab0d Mon Sep 17 00:00:00 2001
+From: Joel Colledge <joel.colledge@linbit.com>
+Date: Mon, 13 Apr 2026 16:49:46 +0200
+Subject: [PATCH] checkpatch: use --no-signoff/--no-fixes-tag for merges
+
+Message formatting is still checked.
+
+Also skip 'fixup!' commits, which are temporary.
+
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+---
+ misc/checkpatch.sh | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/misc/checkpatch.sh b/misc/checkpatch.sh
+index b62104bbb..0c9c7ba94 100755
+--- a/misc/checkpatch.sh
++++ b/misc/checkpatch.sh
+@@ -73,7 +73,12 @@ message)
+ 	# line 3+ the body.
+ 	stripped=$(git stripspace --strip-comments < "$msgfile")
+ 	subject=$(echo "$stripped" | head -1)
++
++	# 'fixup' commits are temporary - do not check.
++	echo "$subject" | grep -qE '^fixup!' && exit 0
++
+ 	author=$(git var GIT_AUTHOR_IDENT | sed 's/> .*/>/')
++
+ 	{
+ 		echo "From: $author"
+ 		echo "Subject: [PATCH] $subject"
+@@ -83,7 +88,13 @@ message)
+ 		echo "diff --git a/x b/x"
+ 	} > "$patch"
+ 
+-	"$checkpatch" --no-tree --ignore FILE_PATH_CHANGES "$patch"
++	# Merge/Skip commits: check message formatting but not
++	# Signed-off-by or Fixes tags.
++	extra_args=()
++	echo "$subject" | grep -qE '^(Merge|Skip)' &&
++		extra_args=(--no-signoff --no-fixes-tag)
++
++	"$checkpatch" --no-tree --ignore FILE_PATH_CHANGES "${extra_args[@]}" "$patch"
+ 	;;
+ 
+ *)

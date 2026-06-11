@@ -1,0 +1,50 @@
+From f1d6d44889b7884c035af02ad6cbc1a77ff74251 Mon Sep 17 00:00:00 2001
+From: Joel Colledge <joel.colledge@linbit.com>
+Date: Wed, 13 May 2026 10:36:00 +0200
+Subject: [PATCH] Revert "drbd: prefer exact (IP, port) match in
+ drbd_find_path_by_addr()"
+
+This reverts commit 624e5e1585fc44a29a1ad00144551a8e02501259.
+
+This approach causes problems when a connection is lost and then quickly
+re-established. The first TCP connection is still in TIME_WAIT or a
+similar state, preventing the connect of the new connection. As a
+result, this feature brings no real benefit. Remove it.
+
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+---
+ drbd/drbd_transport.c | 17 ++++-------------
+ 1 file changed, 4 insertions(+), 13 deletions(-)
+
+diff --git a/drbd/drbd_transport.c b/drbd/drbd_transport.c
+index f37ccd37b..7c6128cbb 100644
+--- a/drbd/drbd_transport.c
++++ b/drbd/drbd_transport.c
+@@ -266,23 +266,14 @@ void drbd_put_listener(struct drbd_path *path)
+ 
+ struct drbd_path *drbd_find_path_by_addr(struct drbd_listener *listener, struct sockaddr_storage *addr)
+ {
+-	struct drbd_path *path, *ip_match = NULL;
+-
+-	/*
+-	 * Prefer an exact (IP, port) match. This disambiguates multiple paths
+-	 * that share a peer IP but have distinct peer_addr ports, as long as
+-	 * the peer (typically a DRBD proxy instance) binds its source port
+-	 * accordingly. Direct DRBD-to-DRBD peers use an ephemeral source port
+-	 * and are resolved by the first IP-only match.
+-	 */
++	struct drbd_path *path;
++
+ 	list_for_each_entry(path, &listener->waiters, listener_link) {
+-		if (addr_and_port_equal(&path->peer_addr, addr))
++		if (addr_equal(&path->peer_addr, addr))
+ 			return path;
+-		if (!ip_match && addr_equal(&path->peer_addr, addr))
+-			ip_match = path;
+ 	}
+ 
+-	return ip_match;
++	return NULL;
+ }
+ 
+ /**

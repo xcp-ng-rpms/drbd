@@ -1,0 +1,65 @@
+From d6e80251aed59f6a64d29c0266cd61f4eea8222b Mon Sep 17 00:00:00 2001
+From: Lars Ellenberg <lars.ellenberg@linbit.com>
+Date: Fri, 22 May 2026 21:42:09 +0200
+Subject: [PATCH] drbd: drop double dec_rs_pending in
+ drbd_peer_resync_read_cancel OV_READ_SOURCE path
+
+For an OV source, rs_pending is incremented exactly once in
+drbd_conflict_send_ov_request() when the P_OV_REQUEST is sent, and
+decremented exactly once in receive_common_ov_reply() at the top of
+the function, before either of the two paths that subsequently reach
+drbd_peer_resync_read_cancel():
+
+  1. the in-line get_ldev_if_state() failure cleanup in
+     receive_common_ov_reply(), which calls
+     drbd_peer_resync_read_cancel() immediately after the explicit dec;
+
+  2. cancel_dagtag_dependent_requests(), which acts on peer_reqs that
+     were parked on dagtag_wait_ee by drbd_peer_resync_read() after
+     receive_common_ov_reply() had already done the dec.
+
+The extra dec_rs_pending() in the INTERVAL_OV_READ_SOURCE branch of
+drbd_peer_resync_read_cancel() therefore drives the counter below zero,
+which the kernel reports as:
+
+  ASSERTION __dec_rs_pending(peer_device) >= 0 FAILED in
+    drbd_peer_resync_read_cancel
+  ASSERTION __dec_rs_pending(peer_device) >= 0 FAILED in
+    receive_common_ov_reply  (repeating)
+  ASSERTION atomic_read(&peer_device->rs_pending_cnt) == 0 FAILED in
+    cleanup_resync_leftovers
+
+The first line is the original double-dec; the next ones are subsequent
+P_OV_REPLY arrivals each dec'ing from an already-negative counter; the
+last one is the disconnect drain seeing rs_pending_cnt != 0 at shutdown.
+
+Both callers already decrement, so the cancel helper must not. Remove it.
+
+Present since commit 223009b6369f ("drbd: synchronize resync with interval
+tree and dagtags") (drbd-9.2.0). dagtag-synchronized resync does not
+exist on drbd-9.1 or drbd-9.0, so no backport beyond drbd-9.2 is needed.
+
+Signed-off-by: Lars Ellenberg <lars.ellenberg@linbit.com>
+---
+ drbd/drbd_receiver.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/drbd/drbd_receiver.c b/drbd/drbd_receiver.c
+index 28f947249..f26fda29f 100644
+--- a/drbd/drbd_receiver.c
++++ b/drbd/drbd_receiver.c
+@@ -3646,8 +3646,12 @@ static void drbd_peer_resync_read_cancel(struct drbd_peer_request *peer_req)
+ 	u64 block_id = peer_req->block_id;
+ 
+ 	if (peer_req->i.type == INTERVAL_OV_READ_SOURCE) {
+-		/* P_OV_REPLY */
+-		dec_rs_pending(peer_device);
++		/* P_OV_REPLY.
++		 * rs_pending was already decremented in
++		 * receive_common_ov_reply() before the peer_req reached
++		 * either of the two paths that call us; do not decrement
++		 * again.
++		 */
+ 		drbd_send_ov_result(peer_device, sector, size, block_id, OV_RESULT_SKIP);
+ 	} else if (peer_req->i.type == INTERVAL_OV_READ_TARGET) {
+ 		/* P_OV_REQUEST */

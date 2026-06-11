@@ -1,0 +1,84 @@
+From 198d4ebdaa12c19ffb5660432d91e7f9a35da686 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Mon, 18 May 2026 10:49:30 +0200
+Subject: [PATCH] drbd: distinguish send_oos list membership with
+ EE_ON_SEND_OOS
+
+Peer_requests on peer_req->recv_order can be linked on four different
+lists: connection->peer_requests, connection->peer_reads, and
+peer_device->resync_requests, and connection->send_oos.
+EE_ON_RECV_ORDER carried the membership marker for all four.
+
+Introduce EE_ON_SEND_OOS to specifically mark membership on send_oos.
+
+EE_ON_RECV_ORDER keeps its meaning, now narrowed to membership on a
+list protected by connection->peer_reqs_lock.
+
+Signed-off-by: Philipp Reisner <philipp.reisner@linbit.com>
+---
+ drbd/drbd_int.h      |  6 +++++-
+ drbd/drbd_receiver.c | 12 ++++++++----
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/drbd/drbd_int.h b/drbd/drbd_int.h
+index 7c46f9ee3..868b30492 100644
+--- a/drbd/drbd_int.h
++++ b/drbd/drbd_int.h
+@@ -538,8 +538,11 @@ enum {
+ 	/* SyncTarget: This is the last resync request. */
+ 	__EE_LAST_RESYNC_REQUEST,
+ 
+-	/* This peer_req->recv_order is on some list */
++	/* This peer_req->recv_order is on some list protected by peer_reqs_lock */
+ 	__EE_ON_RECV_ORDER,
++
++	/* This peer_req->recv_order is on connection->send_oos protocted by send_oos_lock */
++	__EE_ON_SEND_OOS,
+ };
+ #define EE_MAY_SET_IN_SYNC     (1<<__EE_MAY_SET_IN_SYNC)
+ #define EE_SET_OUT_OF_SYNC     (1<<__EE_SET_OUT_OF_SYNC)
+@@ -556,6 +559,7 @@ enum {
+ #define EE_IN_ACTLOG		(1<<__EE_IN_ACTLOG)
+ #define EE_LAST_RESYNC_REQUEST	(1<<__EE_LAST_RESYNC_REQUEST)
+ #define EE_ON_RECV_ORDER	(1<<__EE_ON_RECV_ORDER)
++#define EE_ON_SEND_OOS		(1<<__EE_ON_SEND_OOS)
+ 
+ /* flag bits per device */
+ enum device_flag {
+diff --git a/drbd/drbd_receiver.c b/drbd/drbd_receiver.c
+index e8b18ab50..953411f1e 100644
+--- a/drbd/drbd_receiver.c
++++ b/drbd/drbd_receiver.c
+@@ -457,7 +457,7 @@ void drbd_free_peer_req(struct drbd_peer_request *peer_req)
+ 			list_del(&peer_req->recv_order);
+ 		spin_unlock_irq(&connection->peer_reqs_lock);
+ 	}
+-
++	D_ASSERT(peer_device, !(peer_req->flags & EE_ON_SEND_OOS));
+ 	if (peer_req->flags & EE_HAS_DIGEST)
+ 		kfree(peer_req->digest);
+ 	D_ASSERT(peer_device, atomic_read(&peer_req->pending_bios) == 0);
+@@ -11022,7 +11022,7 @@ static void drbd_send_oos_from(struct drbd_connection *oos_connection, int peer_
+ 		next_peer_req = drbd_send_oos_next_req(peer_ack_connection, oos_node_id, peer_req);
+ 		free_it = !peer_req->send_oos_pending;
+ 		if (free_it) {
+-			peer_req->flags &= ~EE_ON_RECV_ORDER;
++			peer_req->flags &= ~EE_ON_SEND_OOS;
+ 			list_del(&peer_req->recv_order);
+ 		}
+ 		spin_unlock_irq(&peer_ack_connection->send_oos_lock);
+@@ -11154,8 +11154,12 @@ found:
+ 
+ 		peer_req->send_oos_pending = drbd_calculate_send_oos_pending(device, in_sync);
+ 		any_send_oos_pending |= peer_req->send_oos_pending;
+-		if (!peer_req->send_oos_pending)
+-			drbd_free_peer_req(peer_req);
++		if (peer_req->send_oos_pending) {
++			peer_req->flags &= ~EE_ON_RECV_ORDER;
++			peer_req->flags |= EE_ON_SEND_OOS;
++		} else {
++			drbd_free_peer_req(peer_req); /* list_del() because EE_ON_RECV_ORDER */
++		}
+ 	}
+ 
+ 	drbd_queue_send_out_of_sync(connection, &work_list, any_send_oos_pending);

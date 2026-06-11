@@ -1,0 +1,105 @@
+From 1432b01ffcc151903a89f4624885e24d8305d122 Mon Sep 17 00:00:00 2001
+From: Philipp Reisner <philipp.reisner@linbit.com>
+Date: Thu, 14 May 2026 22:30:54 +0200
+Subject: [PATCH] drbd: fix AB-BA deadlock between online resize and AL
+ transactions
+
+drbd_determine_dev_size() acquired md_buffer first and then the AL
+transaction lock, while al_write_transaction() (reached from peer
+requests via drbd_al_begin_io_commit()) acquired them in the opposite
+order.  Running concurrently the two callers can deadlock: the resize
+thread holds md_buffer and waits for the AL transaction lock; the AL
+committer holds the AL transaction lock and waits for md_buffer.  In
+the field this manifested as drbdsetup resize hanging indefinitely
+inside drbd_determine_dev_size() and the corresponding submit worker
+stuck in drbd_md_get_buffer() inside al_write_transaction().
+
+Fix this by taking the AL transaction lock in drbd_determine_dev_size()
+before drbd_md_get_buffer(), matching the ordering used everywhere
+else, and release both on every exit path.
+
+Fixes: 08050c71eb04 ("drbd: Allow online change of al-stripes and al-stripe-size")
+Co-developed-by: Joel Colledge <joel.colledge@linbit.com>
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+Signed-off-by: Philipp Reisner <philipp.reisner@linbit.com>
+---
+ drbd/drbd_nl.c | 32 ++++++++++++++++----------------
+ 1 file changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/drbd/drbd_nl.c b/drbd/drbd_nl.c
+index adea74a37..b932c0620 100644
+--- a/drbd/drbd_nl.c
++++ b/drbd/drbd_nl.c
+@@ -1633,8 +1633,16 @@ drbd_determine_dev_size(struct drbd_device *device, sector_t peer_current_size,
+ 	 * data in core memory, to "move" it we just write it all out, there
+ 	 * are no reads. */
+ 	drbd_suspend_io(device, READ_AND_WRITE);
++
++	/* Take the AL transaction lock before the md_buffer to avoid an
++	 * AB-BA deadlock against al_write_transaction().
++	 */
++	wait_event(device->al_wait, drbd_al_try_lock_for_transaction(device));
++
+ 	buffer = drbd_md_get_buffer(device, __func__); /* Lock meta-data IO */
+ 	if (!buffer) {
++		lc_unlock(device->act_log);
++		wake_up(&device->al_wait);
+ 		drbd_resume_io(device);
+ 		return DS_ERROR;
+ 	}
+@@ -1649,8 +1657,13 @@ drbd_determine_dev_size(struct drbd_device *device, sector_t peer_current_size,
+ 	prev.al_stripe_size_4k = md->al_stripe_size_4k;
+ 	prev_size = get_capacity(device->vdisk);
+ 
++	/* We do some synchronous IO below, which may take some time.
++	 * Clear the timer, to avoid scary "timer expired!" messages,
++	 * "Superblock" is written out at least twice below, anyways.
++	 */
++	timer_delete(&device->md_sync_timer);
++
+ 	if (rs) {
+-		/* FIXME race with peer requests that want to do an AL transaction */
+ 		/* rs is non NULL if we should change the AL layout only */
+ 		md->al_stripes = rs->al_stripes;
+ 		md->al_stripe_size_4k = rs->al_stripe_size / 4;
+@@ -1721,21 +1734,9 @@ drbd_determine_dev_size(struct drbd_device *device, sector_t peer_current_size,
+ 		bool prev_al_disabled = 0;
+ 		u32 prev_peer_full_sync = 0;
+ 
+-		/* We do some synchronous IO below, which may take some time.
+-		 * Clear the timer, to avoid scary "timer expired!" messages,
+-		 * "Superblock" is written out at least twice below, anyways. */
+-		timer_delete(&device->md_sync_timer);
+-
+-		/* We won't change the "al-extents" setting, we just may need
+-		 * to move the on-disk location of the activity log ringbuffer.
+-		 * Lock for transaction is good enough, it may well be "dirty"
+-		 * or even "starving". */
+-		wait_event(device->al_wait, drbd_al_try_lock_for_transaction(device));
+-
+ 		if (drbd_md_dax_active(device->ldev)) {
+ 			if (drbd_dax_map(device->ldev)) {
+ 				drbd_err(device, "Could not remap DAX; aborting resize\n");
+-				lc_unlock(device->act_log);
+ 				goto err_out;
+ 			}
+ 		}
+@@ -1781,9 +1782,6 @@ drbd_determine_dev_size(struct drbd_device *device, sector_t peer_current_size,
+ 		if (rs)
+ 			drbd_info(device, "Changed AL layout to al-stripes = %d, al-stripe-size-kB = %d\n",
+ 				 md->al_stripes, md->al_stripe_size_4k * 4);
+-
+-		lc_unlock(device->act_log);
+-		wake_up(&device->al_wait);
+ 	}
+ 
+ 	if (size > prev_size)
+@@ -1804,6 +1802,8 @@ drbd_determine_dev_size(struct drbd_device *device, sector_t peer_current_size,
+ 		md->al_size_4k = (u64)prev.al_stripes * prev.al_stripe_size_4k;
+ 	}
+ 	drbd_md_put_buffer(device);
++	lc_unlock(device->act_log);
++	wake_up(&device->al_wait);
+ 	drbd_resume_io(device);
+ 
+ 	return rv;

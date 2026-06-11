@@ -1,0 +1,29 @@
+From 7ed3bf75d58fceed253b2195c510fe8db3766645 Mon Sep 17 00:00:00 2001
+From: Joel Colledge <joel.colledge@linbit.com>
+Date: Wed, 6 May 2026 16:22:43 +0200
+Subject: [PATCH] build: enable fault injection using ccflags-y
+
+The approach using `override EXTRA_CFLAGS +=` does not work on some
+modern kernels. For instance 7.0.0-14-generic from Ubuntu Resolute /
+26.04.
+
+This is a partial backport of commit 4d2b2ac9e718 ("drbd: add fault
+injection and debugfs for bio chaining").
+
+Signed-off-by: Joel Colledge <joel.colledge@linbit.com>
+---
+ drbd/Kbuild.drbd | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drbd/Kbuild.drbd b/drbd/Kbuild.drbd
+index 39e32a2ee..b5fcc73e8 100644
+--- a/drbd/Kbuild.drbd
++++ b/drbd/Kbuild.drbd
+@@ -63,6 +63,7 @@ endif
+ # enable fault injection by default
+ ifndef CONFIG_DRBD_FAULT_INJECTION
+ 	override EXTRA_CFLAGS += -DCONFIG_DRBD_FAULT_INJECTION
++	ccflags-y += -DCONFIG_DRBD_FAULT_INJECTION
+ endif
+ 
+ # Disabled for the external module build by default.
