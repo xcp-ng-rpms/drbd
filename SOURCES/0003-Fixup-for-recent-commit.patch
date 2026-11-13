@@ -1,4 +1,4 @@
-From ed8745cfdfe1341588e16dcf171a12e7bbd9b191 Mon Sep 17 00:00:00 2001
+From 59970ace47ca024f3bdf4d7828582a55735493f9 Mon Sep 17 00:00:00 2001
 From: Philipp Reisner <philipp.reisner@linbit.com>
 Date: Wed, 14 Jan 2026 11:06:00 +0100
 Subject: [PATCH] Fixup for recent commit 8f11218ce3758 ('drbd: fix an aspect
@@ -9,10 +9,10 @@ Subject: [PATCH] Fixup for recent commit 8f11218ce3758 ('drbd: fix an aspect
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/drbd/drbd_receiver.c b/drbd/drbd_receiver.c
-index 7d1cc155b..47e04ca32 100644
+index afe222223..933cd07cf 100644
 --- a/drbd/drbd_receiver.c
 +++ b/drbd/drbd_receiver.c
-@@ -767,7 +767,7 @@ static void apply_local_state_change(struct drbd_connection *connection, enum ao
+@@ -822,7 +822,7 @@ static void apply_local_state_change(struct drbd_connection *connection, enum ao
  			if (r == L_WF_BITMAP_T || r == L_SYNC_TARGET || r == L_PAUSED_SYNC_T)
  				__change_disk_state(device, D_OUTDATED);
  
