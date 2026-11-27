@@ -1,7 +1,7 @@
 Name: kmod-drbd
 Summary: Kernel driver for DRBD
-Version: 9.2.18
-Release: 2.0%{?dist}
+Version: 9.2.21
+Release: 1.0%{?dist}
 
 # always require a suitable userland
 Requires: drbd-utils >= 9.27.0
@@ -34,42 +34,20 @@ BuildRequires: %kernel_module_package_buildreqs
 # on SMAPIv3 in order to be compatible with the current linbit design.
 #
 # Patches generated from this repo/branch:
-# https://github.com/LINBIT/drbd/tree/restore_exact_open_counts_9.2.18-2
-# with this command: "git format-patch drbd-9.2.18..HEAD~2 --no-signature --no-numbered".
-# Dropping the 2 last patches:
-#   - Prepare drbd-9.2.18-xen.2
-#   - Prepare drbd-9.2.18-xen.1
+# https://github.com/LINBIT/drbd/tree/restore_exact_open_counts_9.2.21
+# with this command: "git format-patch drbd-9.2.21..HEAD~1 --no-signature --no-numbered".
+# Dropping the last patch:
+#   - Prepare drbd-9.2.21-xen.1
 # because they don't include any useful info (versioning mostly).
-# Also manually dropping patch 0008: "debian: point to new drbd-dev mailing list",
-# because it's modifying debian packaging related files which doesn't exist in the release archive.
 #
 # The official tarballs to use can be found at this link: https://pkg.linbit.com/
 # Never use GitHub tarballs (https://github.com/LINBIT/drbd/tags), which don't work.
 # They are created automatically every time a tag is pushed to the repo by linbit.
 # Just for understanding purposes: working tarballs can be generated via "make tarball"
 # in the root folder of the DRBD project.
-Patch1001: 0001-Revert-drbd-flush_send_buffer-send-error-should-resu.patch
-Patch1002: 0002-checkpatch-use-no-signoff-no-fixes-tag-for-merges.patch
-Patch1003: 0003-misc-add-prepare-commit-msg-script-to-add-signoff.patch
-Patch1004: 0004-containers-add-Ubuntu-Resolute.patch
-Patch1005: 0005-build-enable-fault-injection-using-ccflags-y.patch
-Patch1006: 0006-build-stamp-compat.h-against-include-config-auto.con.patch
-Patch1007: 0007-drbd-prefer-exact-IP-port-match-in-drbd_find_path_by.patch
-Patch1009: 0009-drbd-limit-number-of-volumes-resyncing-in-parallel.patch
-Patch1010: 0010-drbd-fix-AB-BA-deadlock-between-online-resize-and-AL.patch
-Patch1011: 0011-drbd-fix-list-corruption-when-freeing-peer_req-from-.patch
-Patch1012: 0012-drbd-distinguish-send_oos-list-membership-with-EE_ON.patch
-Patch1013: 0013-Revert-drbd-prefer-exact-IP-port-match-in-drbd_find_.patch
-Patch1014: 0014-drbd-pin-listener-across-dtt_wait_for_connect-to-fix.patch
-Patch1015: 0015-drbd-move-TCP-listener-wait-queue-to-tcp_transport.patch
-Patch1016: 0016-drbd-initialize-drbd_resources-list-head-statically.patch
-Patch1017: 0017-build-avoid-stdin-hang-when-kernel-.config-is-unavai.patch
-Patch1018: 0018-drbd-cancel_dagtag_dependent_requests-remove-interva.patch
-Patch1019: 0019-drbd-drop-double-dec_rs_pending-in-drbd_peer_resync_.patch
-Patch1020: 0020-drbd-fix-list-corruption-when-freeing-peer_req-from-.patch
-Patch1021: 0021-Revert-drbd-rework-autopromote.patch
-Patch1022: 0022-Fix-for-Revert-drbd-rework-autopromote.patch
-Patch1023: 0023-Fixup-for-recent-commit.patch
+Patch1001: 0001-Revert-drbd-rework-autopromote.patch
+Patch1002: 0002-Fix-for-Revert-drbd-rework-autopromote.patch
+Patch1003: 0003-Fixup-for-recent-commit.patch
 
 # rpmbuild --with gcov to set GCOV_PROFILE=y for make
 %bcond_with gcov
@@ -203,6 +181,29 @@ sed -i "s/\# \(global_filter\)[[:space:]]*=.*/\1 = [ \"r|^\/dev\/drbd.*|\" ]/g" 
 rm -rf %{buildroot}
 
 %changelog
+* Fri Nov 27 2026 Alexandre Sollier <alexandre.sollier@vates.tech> - 9.2.21-1.0
+- Update to upstream version 9.2.21
+- Remove patches that were upstreamed since last update:
+  - 0001-Revert-drbd-flush_send_buffer-send-error-should-resu.patch
+  - 0002-checkpatch-use-no-signoff-no-fixes-tag-for-merges.patch
+  - 0003-misc-add-prepare-commit-msg-script-to-add-signoff.patch
+  - 0004-containers-add-Ubuntu-Resolute.patch
+  - 0005-build-enable-fault-injection-using-ccflags-y.patch
+  - 0006-build-stamp-compat.h-against-include-config-auto.con.patch
+  - 0007-drbd-prefer-exact-IP-port-match-in-drbd_find_path_by.patch
+  - 0009-drbd-limit-number-of-volumes-resyncing-in-parallel.patch
+  - 0010-drbd-fix-AB-BA-deadlock-between-online-resize-and-AL.patch
+  - 0011-drbd-fix-list-corruption-when-freeing-peer_req-from-.patch
+  - 0012-drbd-distinguish-send_oos-list-membership-with-EE_ON.patch
+  - 0013-Revert-drbd-prefer-exact-IP-port-match-in-drbd_find_.patch
+  - 0014-drbd-pin-listener-across-dtt_wait_for_connect-to-fix.patch
+  - 0015-drbd-move-TCP-listener-wait-queue-to-tcp_transport.patch
+  - 0016-drbd-initialize-drbd_resources-list-head-statically.patch
+  - 0017-build-avoid-stdin-hang-when-kernel-.config-is-unavai.patch
+  - 0018-drbd-cancel_dagtag_dependent_requests-remove-interva.patch
+  - 0019-drbd-drop-double-dec_rs_pending-in-drbd_peer_resync_.patch
+  - 0020-drbd-fix-list-corruption-when-freeing-peer_req-from-.patch
+
 * Mon Jun 08 2026 Mathieu Labourier <mathieu.labourier@vates.tech> - 9.2.18-2.0
 - Update to upstream version 9.2.18 + upstream patches not part of an upstream release yet
 - Limit number of concurrent resyncs
